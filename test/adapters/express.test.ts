@@ -22,4 +22,20 @@ describe("expressMiddleware", () => {
       expect.objectContaining({ route: "/tasks/:id", status: 200 }),
     );
   });
+
+  it("buckets an unmatched route under a fixed sentinel instead of leaking the raw path", async () => {
+    const trackSpy = vi
+      .spyOn(writer, "trackRequest")
+      .mockImplementation(() => {});
+    const app = express();
+    app.use(expressMiddleware());
+    // no route registered for /users/secret-token-abc123
+
+    await request(app).get("/users/secret-token-abc123");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "<unmatched>", status: 404 }),
+    );
+  });
 });
