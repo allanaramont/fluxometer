@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { runInit, type FsLike } from "../../src/cli/init.js";
+import { Pool } from "pg";
+import {
+  createReadonlyRole,
+  runInit,
+  setGitHubSecret,
+  type FsLike,
+} from "../../src/cli/init.js";
+
+const HEX_64 = /[0-9a-f]{64}/i;
 
 function createFakeFs(opts: { files?: Record<string, string> } = {}): FsLike & {
   readFile: (path: string) => string;
@@ -11,18 +19,21 @@ function createFakeFs(opts: { files?: Record<string, string> } = {}): FsLike & {
     warnings.push(args.map(String).join(" "));
   });
 
+  const writeFile = vi.fn(async (path: string, content: string) => {
+    files.set(path, content);
+  });
+
   return {
     warnings,
+    writeFile,
     // Synchronous for easy test assertions — `await` on a plain value is a
     // no-op, so production code's `await opts.fs.readFile(...)` still works.
     readFile: ((path: string) =>
       files.get(path) ?? "") as unknown as FsLike["readFile"],
-    writeFile: (async (path: string, content: string) => {
-      files.set(path, content);
-    }) as FsLike["writeFile"],
     mkdir: (async () => undefined) as FsLike["mkdir"],
   } as unknown as FsLike & {
     readFile: (path: string) => string;
+    writeFile: typeof writeFile;
     warnings: string[];
   };
 }
@@ -54,5 +65,40 @@ describe("runInit", () => {
     expect(fakeFs.warnings).toContainEqual(
       expect.stringMatching(/\.env.*gitignore/i),
     );
+    expect(fakeFs.writeFile).toHaveBeenCalledWith(
+      ".env",
+      expect.any(String),
+      expect.objectContaining({ mode: 0o600 }),
+    );
+  });
+
+  it("never logs the generated password when role creation fails", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    const brokenPool = {
+      query: () => Promise.reject(new Error("permission denied")),
+    } as unknown as Pool;
+
+    const result = await createReadonlyRole(brokenPool, "postgres://x/y");
+
+    expect(result).toBeUndefined();
+    const combined = warnings.join("\n");
+    expect(combined).not.toMatch(HEX_64);
+    expect(combined).toContain("<CHOOSE_A_PASSWORD>");
+  });
+
+  it("never logs the cron secret when setting the GitHub secret fails", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    const secret = "a".repeat(64);
+
+    await setGitHubSecret("FLUXOMETER_CRON_SECRET", secret);
+
+    const combined = warnings.join("\n");
+    expect(combined).not.toContain(secret);
   });
 });

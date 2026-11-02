@@ -16,7 +16,11 @@ export type MissingDatabaseUrlError = {
  * by `node:fs/promises` and in tests by a small in-memory fake. */
 export type FsLike = {
   readFile: (path: string, encoding: "utf8") => Promise<string>;
-  writeFile: (path: string, content: string) => Promise<void>;
+  writeFile: (
+    path: string,
+    content: string,
+    opts?: { mode?: number },
+  ) => Promise<void>;
   mkdir: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
 };
 
@@ -67,24 +71,31 @@ export async function createReadonlyRole(
     url.username = "fluxometer_readonly";
     url.password = password;
     return url.toString();
-  } catch (err) {
+  } catch {
+    // Never log the generated password, nor the underlying error (which may
+    // itself echo connection details) — print a template the operator fills
+    // in with their own password instead.
     console.warn(
-      "fluxometer: could not create the readonly role automatically. Run this SQL yourself:\n" +
-        `  create role fluxometer_readonly login password '${password}';\n` +
+      "fluxometer: could not create the readonly role automatically. Run this SQL yourself, choosing your own password:\n" +
+        "  create role fluxometer_readonly login password '<CHOOSE_A_PASSWORD>';\n" +
         "  grant usage on schema fluxometer to fluxometer_readonly;\n" +
         "  grant select on all tables in schema fluxometer to fluxometer_readonly;",
-      err,
     );
     return undefined;
   }
 }
 
-async function setGitHubSecret(name: string, value: string): Promise<void> {
+export async function setGitHubSecret(
+  name: string,
+  value: string,
+): Promise<void> {
   try {
     await execFileAsync("gh", ["secret", "set", name, "--body", value]);
   } catch {
+    // Never log the secret value itself — it was already written to .env;
+    // point the operator there instead of printing it again.
     console.warn(
-      `fluxometer: couldn't set ${name} via gh. Add it to your CI secrets yourself: ${value}`,
+      `fluxometer: couldn't set ${name} via gh. It's in your .env file — set it as a CI secret yourself.`,
     );
   }
 }
@@ -118,7 +129,8 @@ export async function runInit(opts: RunInitOptions): Promise<void> {
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n");
-    await opts.fs.writeFile(".env", `${envLines}\n`);
+    // 0600: these are secrets, not readable/writable by other local users.
+    await opts.fs.writeFile(".env", `${envLines}\n`, { mode: 0o600 });
 
     await opts.fs.mkdir(".github/workflows", { recursive: true });
     await opts.fs.writeFile(

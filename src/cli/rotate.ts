@@ -53,7 +53,7 @@ export async function runRotate(
     if (newReadonlyUrl) {
       updated = setEnvLine(updated, "FLUXOMETER_READONLY_URL", newReadonlyUrl);
     }
-    await opts.fs.writeFile(".env", updated);
+    await opts.fs.writeFile(".env", updated, { mode: 0o600 });
 
     return { newReadonlyUrl, newCronSecret };
   } finally {
