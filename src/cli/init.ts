@@ -26,7 +26,10 @@ export type RunInitOptions = {
   fs: FsLike;
 };
 
-async function readFileOrEmpty(fs: FsLike, path: string): Promise<string> {
+export async function readFileOrEmpty(
+  fs: FsLike,
+  path: string,
+): Promise<string> {
   try {
     return await fs.readFile(path, "utf8");
   } catch {
@@ -34,12 +37,20 @@ async function readFileOrEmpty(fs: FsLike, path: string): Promise<string> {
   }
 }
 
-async function createReadonlyRole(
+export async function createReadonlyRole(
   pool: Pool,
   databaseUrl: string,
+  opts: { forceRecreate?: boolean } = {},
 ): Promise<string | undefined> {
   const password = randomBytes(32).toString("hex");
   try {
+    if (opts.forceRecreate) {
+      // Drops and recreates so the old password stops working immediately
+      // — this is the whole point of a rotate. DROP OWNED BY first: a role
+      // holding any grant can't be dropped directly in Postgres.
+      await pool.query(`drop owned by fluxometer_readonly`);
+      await pool.query(`drop role if exists fluxometer_readonly`);
+    }
     const { rows } = await pool.query(
       `select 1 from pg_roles where rolname = 'fluxometer_readonly'`,
     );
