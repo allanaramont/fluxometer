@@ -11,5 +11,9 @@ export function verifyCronSecret(
   const paddedB = Buffer.alloc(length);
   a.copy(paddedA);
   b.copy(paddedB);
-  return a.length === b.length && timingSafeEqual(paddedA, paddedB);
+  // timingSafeEqual runs unconditionally (same cost whether lengths match
+  // or not) and is evaluated first — the length check is just a final
+  // boolean AND, not an early-out that would skip the constant-time
+  // comparison for a mismatched length.
+  return timingSafeEqual(paddedA, paddedB) && a.length === b.length;
 }

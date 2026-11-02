@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+
 import { SCHEMA_NAME } from "../core/schema.js";
 
 export type RuleId =
@@ -43,7 +44,7 @@ export async function slowRoute(pool: Pool): Promise<RuleResult[]> {
     metrics: {
       p95: num(row.p95),
       reqs: num(row.reqs),
-      tempoTotalMs: num(row.total_ms),
+      totalMs: num(row.total_ms),
     },
   }));
 }
@@ -73,19 +74,28 @@ export async function regression(pool: Pool): Promise<RuleResult[]> {
     metrics: {
       p95: num(row.p95_now),
       p95Before: num(row.p95_before),
-      variacaoPct: Math.round(
+      changePct: Math.round(
         ((num(row.p95_now) - num(row.p95_before)) / num(row.p95_before)) * 100,
       ),
     },
   }));
 }
 
+const TOP_CONSUMER_MIN_REQS = 50;
+const TOP_CONSUMER_MIN_TOTAL_MS = 60_000;
+
+/** Without a floor, the top 3 routes by total time are reported even on
+ * a day with only a handful of trivial requests — "no bottleneck today"
+ * (the empty-results branch) would then be effectively unreachable in
+ * practice. Both a minimum request volume and a minimum total time are
+ * required before a route counts as a genuine top consumer. */
 export async function topConsumer(pool: Pool): Promise<RuleResult[]> {
   const { rows } = await pool.query(
     `select route, sum(duration_ms) as total_ms, count(*) as reqs
      from ${SCHEMA_NAME}.request_metrics
      where created_at > now() - interval '24 hours'
      group by route
+     having count(*) >= ${TOP_CONSUMER_MIN_REQS} and sum(duration_ms) > ${TOP_CONSUMER_MIN_TOTAL_MS}
      order by total_ms desc
      limit 3`,
   );
@@ -93,7 +103,7 @@ export async function topConsumer(pool: Pool): Promise<RuleResult[]> {
     ruleId: "top_consumer" as const,
     severity: "medium" as const,
     subject: row.route,
-    metrics: { tempoTotalMs: num(row.total_ms), reqs: num(row.reqs) },
+    metrics: { totalMs: num(row.total_ms), reqs: num(row.reqs) },
   }));
 }
 
@@ -119,7 +129,7 @@ export async function errorSpike(pool: Pool): Promise<RuleResult[]> {
       ruleId: "error_spike" as const,
       severity: "high" as const,
       subject: bucket.route,
-      metrics: { taxaErro: bucket.rate, reqs: bucket.reqs },
+      metrics: { errorRate: bucket.rate, reqs: bucket.reqs },
     }));
 }
 
@@ -236,8 +246,8 @@ export async function platformErrorConcentration(
         severity: "medium" as const,
         subject: p.platform,
         metrics: {
-          taxaErro: rate,
-          mediaOutrasPlataformas: restRate,
+          errorRate: rate,
+          otherPlatformsRate: restRate,
           reqs: p.reqs,
         },
       });
@@ -267,7 +277,7 @@ export async function timeoutSpike(pool: Pool): Promise<RuleResult[]> {
       ruleId: "timeout_spike" as const,
       severity: "high" as const,
       subject: bucket.route,
-      metrics: { taxaTimeout: bucket.rate, reqs: bucket.reqs },
+      metrics: { timeoutRate: bucket.rate, reqs: bucket.reqs },
     }));
 }
 
@@ -297,9 +307,9 @@ export async function aiCostSpike(pool: Pool): Promise<RuleResult[]> {
       severity: "medium" as const,
       subject: "ai_calls",
       metrics: {
-        custoMedioHoje: num(row.avg_cost_now),
-        custoMedioAntes: num(row.avg_cost_before),
-        chamadasHoje: num(row.calls_now),
+        avgCostToday: num(row.avg_cost_now),
+        avgCostBefore: num(row.avg_cost_before),
+        callsToday: num(row.calls_now),
       },
     },
   ];
@@ -317,7 +327,7 @@ export async function aiFailureRate(pool: Pool): Promise<RuleResult[]> {
     ruleId: "ai_failure_rate" as const,
     severity: "high" as const,
     subject: row.model,
-    metrics: { taxaFalha: num(row.failure_rate), chamadas: num(row.calls) },
+    metrics: { failureRate: num(row.failure_rate), calls: num(row.calls) },
   }));
 }
 
@@ -360,9 +370,9 @@ export async function peakHourBottleneck(pool: Pool): Promise<RuleResult[]> {
           severity: "medium",
           subject: route,
           metrics: {
-            horaDoDia: bucket.hour,
+            hourOfDay: bucket.hour,
             p95: bucket.p95,
-            p95Medio: avgP95,
+            avgP95: avgP95,
             reqs: bucket.reqs,
           },
         });
@@ -402,8 +412,8 @@ export async function postDeployRegression(pool: Pool): Promise<RuleResult[]> {
     severity: "high" as const,
     subject: row.route,
     metrics: {
-      p95Depois: num(row.p95_after),
-      p95Antes: num(row.p95_before),
+      p95After: num(row.p95_after),
+      p95Before: num(row.p95_before),
       reqs: num(row.reqs),
     },
   }));
