@@ -22,7 +22,22 @@ export type FsLike = {
     opts?: { mode?: number },
   ) => Promise<void>;
   mkdir: (path: string, opts?: { recursive?: boolean }) => Promise<unknown>;
+  chmod: (path: string, mode: number) => Promise<void>;
 };
+
+/** Writes a secret-bearing file and locks it down to owner-only
+ * read/write. `writeFile`'s own `mode` option only applies when the file
+ * is newly created — Postgres `O_CREAT` semantics mean it's silently
+ * ignored for a file that already exists — so permissions are always
+ * enforced again afterwards with an explicit `chmod`. */
+export async function writeSecretFile(
+  fs: FsLike,
+  path: string,
+  content: string,
+): Promise<void> {
+  await fs.writeFile(path, content, { mode: 0o600 });
+  await fs.chmod(path, 0o600);
+}
 
 export type RunInitOptions = {
   prompt: (question: string) => Promise<string>;
@@ -44,23 +59,23 @@ export async function readFileOrEmpty(
 export async function createReadonlyRole(
   pool: Pool,
   databaseUrl: string,
-  opts: { forceRecreate?: boolean } = {},
 ): Promise<string | undefined> {
   const password = randomBytes(32).toString("hex");
   try {
-    if (opts.forceRecreate) {
-      // Drops and recreates so the old password stops working immediately
-      // — this is the whole point of a rotate. DROP OWNED BY first: a role
-      // holding any grant can't be dropped directly in Postgres.
-      await pool.query(`drop owned by fluxometer_readonly`);
-      await pool.query(`drop role if exists fluxometer_readonly`);
-    }
     const { rows } = await pool.query(
       `select 1 from pg_roles where rolname = 'fluxometer_readonly'`,
     );
     if (rows.length === 0) {
       await pool.query(
         `create role fluxometer_readonly login password '${password}'`,
+      );
+    } else {
+      // The role already exists (a previous init/rotate ran) — there is no
+      // way to read an existing password back out of Postgres, so every
+      // call sets a fresh one. This also IS the rotation: calling this
+      // again is how `runRotate` invalidates the old credential.
+      await pool.query(
+        `alter role fluxometer_readonly with login password '${password}'`,
       );
     }
     await pool.query(`grant usage on schema fluxometer to fluxometer_readonly`);
@@ -129,8 +144,7 @@ export async function runInit(opts: RunInitOptions): Promise<void> {
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n");
-    // 0600: these are secrets, not readable/writable by other local users.
-    await opts.fs.writeFile(".env", `${envLines}\n`, { mode: 0o600 });
+    await writeSecretFile(opts.fs, ".env", `${envLines}\n`);
 
     await opts.fs.mkdir(".github/workflows", { recursive: true });
     await opts.fs.writeFile(

@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createMcpServer } from "../mcp/server.js";
 import { parseArgv } from "./argv.js";
 import { runInit } from "./init.js";
-import { runRotate } from "./rotate.js";
+import { describeRotateResult, runRotate } from "./rotate.js";
 
 async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -33,10 +33,7 @@ async function main(): Promise<void> {
 
   if (command === "rotate") {
     const result = await runRotate({ env: process.env, fs });
-    console.log(
-      `fluxometer: rotated. New cron secret: ${result.newCronSecret}` +
-        (result.newReadonlyUrl ? ` New readonly URL written to .env.` : ""),
-    );
+    console.log(describeRotateResult(result));
     return;
   }
 
