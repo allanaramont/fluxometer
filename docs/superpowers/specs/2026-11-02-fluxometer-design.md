@@ -25,7 +25,11 @@ construir ou proteger.
   TypeORM nem percebem), pergunta a URL do webhook do Slack, escreve no
   `.env`, e gera um workflow do GitHub Actions pronto (`schedule:`) que
   dispara o resumo diário batendo numa rota exposta pelo pacote. Gera
-  também um template de Vercel Cron como alternativa.
+  também um template de Vercel Cron como alternativa. `init` também
+  confere se `.env` está no `.gitignore` e avisa (sem bloquear) se não
+  estiver, e um comando `npx fluxometer rotate` gera uma nova role de
+  leitura + novo `FLUXOMETER_CRON_SECRET` e revoga os antigos, pra uso se
+  alguma credencial vazar.
 - Adapters oficiais: Express, Fastify, Next.js (middleware). `track()`
   genérico pra qualquer outro framework JS/TS.
 - Coleta é fire-and-forget / em lote — nunca bloqueia a resposta, nunca
@@ -159,6 +163,11 @@ Princípio: fluxometer não tem backend próprio, não telemetria, não "liga
 pra casa" — nenhuma credencial passa por nós, tudo fica no `.env`/secrets
 da própria pessoa.
 
+Reforços no `init`: confere se `.env` está no `.gitignore` (avisa, não
+bloqueia, se não estiver) e oferece `npx fluxometer rotate` — gera role de
+leitura e `FLUXOMETER_CRON_SECRET` novos e revoga os antigos, pra quando
+alguma credencial vazar.
+
 | Credencial                               | Origem                                                         | Onde mora                                                                                      | Pior caso de vazamento                                                                                       |
 | ---------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `FLUXOMETER_SLACK_WEBHOOK_URL`           | Pessoa cria em Slack → Incoming Webhooks                       | `.env` do app                                                                                  | Write-only: alguém posta spam no canal. Não lê nada.                                                         |
@@ -207,8 +216,12 @@ da própria pessoa.
    detectar `gh` autenticado; senão, imprime o valor pra colar manualmente.
 6. CLI escreve `.github/workflows/fluxometer-report.yml` (e o template
    Vercel Cron como alternativa) — a pessoa só precisa commitar.
-7. Uma linha de adapter no código do app (copiar do README).
-8. Deploy.
+7. CLI confere `.gitignore` e avisa se `.env` não estiver lá.
+8. Uma linha de adapter no código do app (copiar do README).
+9. Deploy.
+
+Se algo vazar depois: `npx fluxometer rotate` troca role de leitura e
+cron secret de uma vez.
 
 Única etapa fora do nosso controle é criar o webhook no Slack (UI deles) —
 o resto cabe nos ~5 minutos prometidos pra quem já tem Postgres + Git.
