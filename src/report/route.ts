@@ -18,14 +18,26 @@ export type FluxometerRequest = {
 };
 export type FluxometerResponse = { status: number; body: string };
 
+const BEARER_PREFIX = "Bearer ";
+
+/** GitHub Actions' template sends the secret as `x-fluxometer-secret`;
+ * Vercel Cron cannot set a custom header and always sends
+ * `Authorization: Bearer $CRON_SECRET` instead — both are accepted so
+ * the generated Vercel template actually works. */
+function providedSecret(req: FluxometerRequest): string | undefined {
+  const headerValue = req.header("x-fluxometer-secret");
+  if (headerValue) return headerValue;
+  const authHeader = req.header("authorization") ?? req.header("Authorization");
+  return authHeader?.startsWith(BEARER_PREFIX)
+    ? authHeader.slice(BEARER_PREFIX.length)
+    : undefined;
+}
+
 export async function handleReportRequest(
   req: FluxometerRequest,
 ): Promise<FluxometerResponse> {
   const expected = process.env.FLUXOMETER_CRON_SECRET;
-  if (
-    !expected ||
-    !verifyCronSecret(req.header("x-fluxometer-secret"), expected)
-  ) {
+  if (!expected || !verifyCronSecret(providedSecret(req), expected)) {
     return { status: 401, body: "unauthorized" };
   }
 

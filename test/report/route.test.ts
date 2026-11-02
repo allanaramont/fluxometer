@@ -32,6 +32,19 @@ describe("handleReportRequest", () => {
     expect(res.status).toBe(401);
   });
 
+  it("also accepts the secret via Authorization: Bearer — Vercel Cron cannot set a custom header", async () => {
+    const req = {
+      header: (n: string) =>
+        n.toLowerCase() === "authorization"
+          ? `Bearer ${process.env.FLUXOMETER_CRON_SECRET}`
+          : undefined,
+    };
+
+    const res = await handleReportRequest(req);
+
+    expect(res.status).toBe(200);
+  });
+
   it("runs the engine and sends to Slack exactly once for a valid request, and ignores an identical duplicate within the guard window", async () => {
     const req = {
       header: (n: string) =>
