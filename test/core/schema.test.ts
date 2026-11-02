@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { describe, expect, it } from "vitest";
+
 import { runMigration } from "../../src/core/schema.js";
 
 describe("runMigration", () => {

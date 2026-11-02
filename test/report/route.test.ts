@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { setPoolForTesting } from "../../src/core/pool.js";
-import * as slackSend from "../../src/report/slackSend.js";
+import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
   handleReportRequest,
   resetDuplicateGuardForTesting,
 } from "../../src/report/route.js";
+import * as slackSend from "../../src/report/slackSend.js";
 
 const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 

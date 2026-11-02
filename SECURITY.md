@@ -42,6 +42,12 @@ home" — every credential stays in your own `.env`/secrets store.
 - `.env` is written with explicit `0600` permissions (enforced with a
   `chmod` after every write, since Node's `writeFile` mode option is
   only applied when a file is newly created).
+- `init`/`rotate` never pass the cron secret to `gh` as a command-line
+  argument (which would be readable via `ps` by anyone on the machine
+  while it runs) — it's piped over stdin (`--body-file -`) instead.
+- `init`/`rotate` merge into your existing `.env` and never touch an
+  existing `vercel.json` — both are the host app's own files, and this
+  package has no business overwriting them.
 
 ## Reporting a vulnerability
 

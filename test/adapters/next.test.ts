@@ -1,7 +1,8 @@
+import { type NextRequest,NextResponse } from "next/server";
 import { describe, expect, it, vi } from "vitest";
-import { NextResponse, type NextRequest } from "next/server";
-import * as writer from "../../src/core/writer.js";
+
 import { fluxometer } from "../../src/adapters/next.js";
+import * as writer from "../../src/core/writer.js";
 
 function buildMockNextRequest(overrides: {
   nextUrl: { pathname: string };

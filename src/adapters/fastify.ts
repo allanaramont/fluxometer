@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import fp from "fastify-plugin";
+
 import { trackRequest } from "../core/writer.js";
 
 /** Fixed bucket for requests that never matched a route — the raw url can
