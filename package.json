@@ -20,6 +20,9 @@
     "./report": "./dist/report/route.js",
     "./package.json": "./package.json"
   },
+  "overrides": {
+    "minimatch": "^11.0.4"
+  },
   "files": [
     "dist",
     "README.md",
@@ -29,7 +32,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit && eslint ."
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
@@ -58,6 +61,8 @@
     "@types/node": "^20.14.0",
     "@types/pg": "^8.11.6",
     "@types/supertest": "^7.2.1",
+    "eslint": "^10.14.0",
+    "eslint-plugin-simple-import-sort": "^14.0.0",
     "express": "^5.3.0",
     "fastify": "^5.12.8",
     "next": "^16.4.4",
@@ -65,6 +70,7 @@
     "react-dom": "^19.3.1",
     "supertest": "^7.3.1",
     "typescript": "^5.5.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^4.1.12"
   }
 }

@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+
 import { RULES } from "./catalog.js";
 import type { RuleId, RuleResult } from "./queries.js";
 
@@ -9,7 +10,7 @@ const SEVERITY_RANK: Record<RuleResult["severity"], number> = {
 
 /** A live incident (an error spike happening right now) always matters
  * more than a chronically slow endpoint, no matter how large that
- * endpoint's own raw metrics are — comparing `tempoTotalMs` against
+ * endpoint's own raw metrics are — comparing `totalMs` against
  * `reqs` directly (incomparable units) would let a big-but-harmless
  * number outrank a small-but-urgent one. This fixed order is the primary
  * sort key within a severity tier; each rule's own metric magnitude only
@@ -31,7 +32,7 @@ const RULE_PRIORITY: Record<RuleId, number> = {
 
 function impact(result: RuleResult): number {
   const value =
-    result.metrics.tempoTotalMs ??
+    result.metrics.totalMs ??
     result.metrics.p95 ??
     result.metrics.reqs ??
     0;

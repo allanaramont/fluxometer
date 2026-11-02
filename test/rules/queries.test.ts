@@ -1,11 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
   errorSpike,
   platformErrorConcentration,
   slowQuery,
   timeoutSpike,
+  topConsumer,
 } from "../../src/rules/queries.js";
 
 const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
@@ -73,6 +75,15 @@ describe("errorSpike", () => {
 
     expect(results.some((r) => r.subject === "/api")).toBe(true);
   });
+
+  it("uses English metric key names — this is an en-default public package, not a pt/en mix", async () => {
+    await seed("/api", 50, { status: 500 });
+
+    const results = await errorSpike(pool);
+
+    expect(results[0]?.metrics).toHaveProperty("errorRate");
+    expect(results[0]?.metrics).not.toHaveProperty("taxaErro");
+  });
 });
 
 describe("timeoutSpike", () => {
@@ -86,6 +97,31 @@ describe("timeoutSpike", () => {
     const results = await timeoutSpike(pool);
 
     expect(results.some((r) => r.subject === "/api")).toBe(true);
+  });
+});
+
+describe("topConsumer", () => {
+  it("reports nothing on a healthy day with only trivial traffic, instead of forcing the top 3 regardless of volume", async () => {
+    // A handful of fast, low-volume requests — nothing worth reporting.
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.request_metrics (route, method, status, duration_ms)
+       select '/ping', 'GET', 200, 5 from generate_series(1, 5)`,
+    );
+
+    const results = await topConsumer(pool);
+
+    expect(results).toEqual([]);
+  });
+
+  it("still reports genuine top consumers with real volume and time", async () => {
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.request_metrics (route, method, status, duration_ms)
+       select '/heavy', 'GET', 200, 500 from generate_series(1, 200)`,
+    );
+
+    const results = await topConsumer(pool);
+
+    expect(results.some((r) => r.subject === "/heavy")).toBe(true);
   });
 });
 

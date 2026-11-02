@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { RuleResult } from "../../src/rules/queries.js";
+
 import { resolveMessage } from "../../src/rules/i18n/index.js";
+import type { RuleResult } from "../../src/rules/queries.js";
 
 describe("resolveMessage", () => {
   it("resolves slow_route in all three locales with the route interpolated", () => {

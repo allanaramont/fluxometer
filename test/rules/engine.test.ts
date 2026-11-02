@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import { rank, runEngine } from "../../src/rules/engine.js";
 import type { RuleResult } from "../../src/rules/queries.js";
@@ -72,13 +73,13 @@ describe("rank", () => {
       ruleId: "slow_route",
       severity: "high",
       subject: "/slow",
-      metrics: { tempoTotalMs: 5_000_000, p95: 1500, reqs: 5000 },
+      metrics: { totalMs: 5_000_000, p95: 1500, reqs: 5000 },
     };
     const errorSpikeResult: RuleResult = {
       ruleId: "error_spike",
       severity: "high",
       subject: "/checkout",
-      metrics: { taxaErro: 0.5, reqs: 12 },
+      metrics: { errorRate: 0.5, reqs: 12 },
     };
 
     const results = rank([slowRouteResult, errorSpikeResult]);

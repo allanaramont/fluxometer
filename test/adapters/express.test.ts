@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
-import * as writer from "../../src/core/writer.js";
+import { describe, expect, it, vi } from "vitest";
+
 import { expressMiddleware } from "../../src/adapters/express.js";
+import * as writer from "../../src/core/writer.js";
 
 describe("expressMiddleware", () => {
   it("calls trackRequest with normalized route, status and duration after the response finishes", async () => {

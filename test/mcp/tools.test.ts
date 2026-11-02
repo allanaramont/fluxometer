@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { beforeEach, describe, expect, it } from "vitest";
+
 import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
+  resetReadonlyPoolForTesting,
   setReadonlyPoolForTesting,
   whatShouldILookAtToday,
 } from "../../src/mcp/tools.js";
@@ -31,5 +33,20 @@ describe("whatShouldILookAtToday", () => {
     await expect(
       whatShouldILookAtToday({ locale: "fr" as any }),
     ).rejects.toMatchObject({ code: "invalid_locale" });
+  });
+
+  it("rejects clearly when FLUXOMETER_READONLY_URL is missing, instead of an unrelated connection error", async () => {
+    resetReadonlyPoolForTesting();
+    const original = process.env.FLUXOMETER_READONLY_URL;
+    delete process.env.FLUXOMETER_READONLY_URL;
+
+    try {
+      await expect(whatShouldILookAtToday({})).rejects.toMatchObject({
+        code: "missing_readonly_url",
+      });
+    } finally {
+      if (original) process.env.FLUXOMETER_READONLY_URL = original;
+      setReadonlyPoolForTesting(pool);
+    }
   });
 });

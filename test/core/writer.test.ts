@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
+import { beforeEach, describe, expect, it } from "vitest";
+
 import { flushForTesting, setPoolForTesting } from "../../src/core/pool.js";
+import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
   cleanupOldRows,
   resetDeployMarkerForTesting,

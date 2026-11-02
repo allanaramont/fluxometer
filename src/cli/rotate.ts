@@ -1,14 +1,16 @@
 import { randomBytes } from "node:crypto";
+
 import { Pool } from "pg";
+
+import { FluxometerError } from "../core/errors.js";
 import { setEnvLine } from "./envFile.js";
 import {
   createReadonlyRole,
+  type ExecFileFn,
+  type FsLike,
   readFileOrEmpty,
   setGitHubSecret,
   writeSecretFile,
-  type ExecFileFn,
-  type FsLike,
-  type MissingDatabaseUrlError,
 } from "./init.js";
 
 export type RunRotateOptions = {
@@ -27,12 +29,10 @@ export async function runRotate(
 ): Promise<RunRotateResult> {
   const databaseUrl = opts.env.DATABASE_URL;
   if (!databaseUrl) {
-    const error: MissingDatabaseUrlError = {
-      code: "missing_database_url",
-      message:
-        "DATABASE_URL is not set. Set it and run `fluxometer rotate` again.",
-    };
-    throw error;
+    throw new FluxometerError(
+      "missing_database_url",
+      "DATABASE_URL is not set. Set it and run `fluxometer rotate` again.",
+    );
   }
 
   const pool = new Pool({ connectionString: databaseUrl });
@@ -58,7 +58,8 @@ export async function runRotate(
       // The cron secret above DID rotate successfully — that write already
       // landed. This failure is reported on its own rather than silently
       // claiming a full rotation that didn't happen.
-      throw new Error(
+      throw new FluxometerError(
+        "readonly_role_rotation_failed",
         "fluxometer: cron secret rotated, but the readonly role could not be rotated automatically — see the warning above for the SQL to run yourself.",
       );
     }

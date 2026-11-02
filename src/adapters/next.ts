@@ -1,5 +1,6 @@
 import type { NextMiddleware, NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+
 import { trackRequest } from "../core/writer.js";
 
 const NUMERIC_SEGMENT = /^\d+$/;

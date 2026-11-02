@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+
 import { whatShouldILookAtToday } from "./tools.js";
 
 export function createMcpServer(): McpServer {

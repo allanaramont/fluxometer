@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
-import { SCHEMA_NAME } from "./schema.js";
+
 import { getPool, trackPending } from "./pool.js";
+import { SCHEMA_NAME } from "./schema.js";
 import type { AiCallMetric, ClientMetric, RequestMetric } from "./types.js";
 
 const warnedOnce = new Set<string>();

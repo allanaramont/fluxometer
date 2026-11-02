@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
-import * as writer from "../../src/core/writer.js";
+import { describe, expect, it, vi } from "vitest";
+
 import { fastifyPlugin } from "../../src/adapters/fastify.js";
+import * as writer from "../../src/core/writer.js";
 
 describe("fastifyPlugin", () => {
   it("calls trackRequest with the route pattern and status after the response is sent", async () => {
