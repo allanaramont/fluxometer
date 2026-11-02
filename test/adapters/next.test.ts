@@ -32,4 +32,21 @@ describe("fluxometer (Next.js adapter)", () => {
       expect.objectContaining({ route: "/tasks/:id" }),
     );
   });
+
+  it("buckets a path with an opaque/oversized segment under a fixed sentinel instead of recording it raw", async () => {
+    const trackSpy = vi
+      .spyOn(writer, "trackRequest")
+      .mockImplementation(() => {});
+    const wrapped = fluxometer((_req) => NextResponse.next());
+    const opaqueToken = "a".repeat(80);
+
+    await wrapped(
+      buildMockNextRequest({ nextUrl: { pathname: `/users/${opaqueToken}` } }),
+      {} as any,
+    );
+
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "<unmatched>" }),
+    );
+  });
 });

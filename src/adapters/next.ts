@@ -5,20 +5,29 @@ import { trackRequest } from "../core/writer.js";
 const NUMERIC_SEGMENT = /^\d+$/;
 const UUID_SEGMENT =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Conservative allowlist for a static path segment (kebab/camel/snake
+ * case, bounded length). Anything else — opaque tokens, oversized
+ * segments, unexpected characters — buckets the whole route under
+ * `<unmatched>` rather than being recorded verbatim. */
+const SAFE_STATIC_SEGMENT = /^[a-zA-Z0-9_-]{0,40}$/;
+const UNMATCHED_ROUTE = "<unmatched>";
 
 /** Next.js middleware runs before route params are resolved, so there is
  * no matched pattern to read (unlike Express/Fastify). Numeric and UUID
- * segments are replaced with `:id` so the route label never carries a raw
- * identifier. */
+ * segments are replaced with `:id`; any remaining segment that doesn't
+ * look like a normal static path piece buckets the whole route under a
+ * fixed sentinel instead of leaking unbounded-cardinality content. */
 function normalizeRoute(pathname: string): string {
-  return pathname
-    .split("/")
-    .map((segment) =>
-      NUMERIC_SEGMENT.test(segment) || UUID_SEGMENT.test(segment)
-        ? ":id"
-        : segment,
-    )
-    .join("/");
+  const segments = pathname.split("/").map((segment) => {
+    if (NUMERIC_SEGMENT.test(segment) || UUID_SEGMENT.test(segment))
+      return ":id";
+    return segment;
+  });
+  const hasUnsafeSegment = segments.some(
+    (segment) => segment !== ":id" && !SAFE_STATIC_SEGMENT.test(segment),
+  );
+  if (hasUnsafeSegment) return UNMATCHED_ROUTE;
+  return segments.join("/");
 }
 
 /** Wraps an existing Next.js middleware (or a pass-through) to also record
