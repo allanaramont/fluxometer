@@ -1,6 +1,8 @@
 import type { RuleResult } from "../queries.js";
 import { CATALOG, type Locale } from "./catalog.js";
 
+export type { Locale };
+
 export function resolveMessage(
   locale: Locale,
   result: RuleResult,
