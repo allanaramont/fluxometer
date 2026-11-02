@@ -7,6 +7,24 @@
   "engines": {
     "node": ">=18"
   },
+  "bin": {
+    "fluxometer": "./dist/cli/bin.js"
+  },
+  "main": "./dist/adapters/generic.js",
+  "types": "./dist/adapters/generic.d.ts",
+  "exports": {
+    ".": "./dist/adapters/generic.js",
+    "./express": "./dist/adapters/express.js",
+    "./fastify": "./dist/adapters/fastify.js",
+    "./next": "./dist/adapters/next.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
