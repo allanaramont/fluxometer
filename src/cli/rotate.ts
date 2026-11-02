@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
+import { setEnvLine } from "./envFile.js";
 import {
   createReadonlyRole,
   readFileOrEmpty,
   setGitHubSecret,
   writeSecretFile,
+  type ExecFileFn,
   type FsLike,
   type MissingDatabaseUrlError,
 } from "./init.js";
@@ -12,23 +14,13 @@ import {
 export type RunRotateOptions = {
   env: NodeJS.ProcessEnv;
   fs: FsLike;
+  execFile?: ExecFileFn;
 };
 
 export type RunRotateResult = {
   newReadonlyUrl: string | undefined;
   newCronSecret: string;
 };
-
-function setEnvLine(content: string, key: string, value: string): string {
-  const pattern = new RegExp(`^${key}=.*$`, "m");
-  const line = `${key}=${value}`;
-  if (pattern.test(content)) {
-    return content.replace(pattern, line);
-  }
-  return content.length > 0 && !content.endsWith("\n")
-    ? `${content}\n${line}\n`
-    : `${content}${line}\n`;
-}
 
 export async function runRotate(
   opts: RunRotateOptions,
@@ -49,7 +41,11 @@ export async function runRotate(
     // IS the rotation, no separate drop/recreate step needed.
     const newReadonlyUrl = await createReadonlyRole(pool, databaseUrl);
     const newCronSecret = randomBytes(32).toString("hex");
-    await setGitHubSecret("FLUXOMETER_CRON_SECRET", newCronSecret);
+    await setGitHubSecret(
+      "FLUXOMETER_CRON_SECRET",
+      newCronSecret,
+      opts.execFile,
+    );
 
     const existing = await readFileOrEmpty(opts.fs, ".env");
     let updated = setEnvLine(existing, "FLUXOMETER_CRON_SECRET", newCronSecret);

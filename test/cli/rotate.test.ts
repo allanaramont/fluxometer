@@ -25,10 +25,14 @@ describe("runRotate", () => {
           "FLUXOMETER_READONLY_URL=old\nFLUXOMETER_CRON_SECRET=oldsecret\n",
       },
     });
+    const execFile = vi
+      .fn()
+      .mockRejectedValue(new Error("gh not available in test"));
 
     const result = await runRotate({
       env: { DATABASE_URL: process.env.TEST_DATABASE_URL },
       fs: fakeFs,
+      execFile,
     });
 
     expect(result.newCronSecret).not.toBe("oldsecret");
@@ -40,13 +44,20 @@ describe("runRotate", () => {
       files: { ".env": "FLUXOMETER_CRON_SECRET=oldsecret\n" },
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    const execFile = vi
+      .fn()
+      .mockRejectedValue(new Error("gh not available in test"));
     // A connection that can never succeed (closed port) makes
     // createReadonlyRole's internal queries fail for a real reason,
     // without needing to mock pg's Pool.
     const unreachableUrl = "postgresql://nouser:nopass@127.0.0.1:1/nonexistent";
 
     await expect(
-      runRotate({ env: { DATABASE_URL: unreachableUrl }, fs: fakeFs }),
+      runRotate({
+        env: { DATABASE_URL: unreachableUrl },
+        fs: fakeFs,
+        execFile,
+      }),
     ).rejects.toThrow(/readonly role could not be rotated/i);
 
     // The cron secret half of the rotation still landed on disk.

@@ -49,22 +49,39 @@ describe("runInit", () => {
     ).rejects.toMatchObject({ code: "missing_database_url" });
   });
 
-  it("creates the schema, writes .env entries, generates the workflow file, and warns if .env is not gitignored", async () => {
-    const fakeFs = createFakeFs({ files: { ".gitignore": "node_modules\n" } });
+  it("creates the schema, merges .env entries without touching unrelated keys, generates the workflow file, never overwrites an existing vercel.json, and warns if .env is not gitignored", async () => {
+    const fakeFs = createFakeFs({
+      files: {
+        ".gitignore": "node_modules\n",
+        ".env": "DATABASE_URL=keep-me\nOTHER_APP_SECRET=keep-me-too\n",
+        "vercel.json": '{"functions":{"keep":"me"}}',
+      },
+    });
     const prompt = vi
       .fn()
       .mockResolvedValue("https://hooks.slack.com/services/x");
+    const execFile = vi
+      .fn()
+      .mockRejectedValue(new Error("gh not available in test"));
 
     await runInit({
       prompt,
       env: { DATABASE_URL: process.env.TEST_DATABASE_URL },
       fs: fakeFs,
+      execFile,
     });
 
-    expect(fakeFs.readFile(".env")).toContain("FLUXOMETER_SLACK_WEBHOOK_URL");
+    const envContent = fakeFs.readFile(".env");
+    expect(envContent).toContain("DATABASE_URL=keep-me");
+    expect(envContent).toContain("OTHER_APP_SECRET=keep-me-too");
+    expect(envContent).toContain("FLUXOMETER_SLACK_WEBHOOK_URL");
     expect(
       fakeFs.readFile(".github/workflows/fluxometer-report.yml"),
     ).toContain("schedule");
+    // The user's own vercel.json (routes, functions, etc.) must survive —
+    // the cron snippet goes to its own file instead.
+    expect(fakeFs.readFile("vercel.json")).toBe('{"functions":{"keep":"me"}}');
+    expect(fakeFs.readFile("fluxometer.vercel-cron.json")).toContain("crons");
     expect(fakeFs.warnings).toContainEqual(
       expect.stringMatching(/\.env.*gitignore/i),
     );
@@ -128,9 +145,19 @@ describe("runInit", () => {
       warnings.push(args.map(String).join(" "));
     });
     const secret = "a".repeat(64);
+    // Injected rather than shelling out to a real `gh` — a real call would
+    // write/overwrite an Actions secret on whatever repo the test happens
+    // to run inside.
+    const failingExec = vi
+      .fn()
+      .mockRejectedValue(new Error("gh: not authenticated"));
 
-    await setGitHubSecret("FLUXOMETER_CRON_SECRET", secret);
+    await setGitHubSecret("FLUXOMETER_CRON_SECRET", secret, failingExec);
 
+    expect(failingExec).toHaveBeenCalledWith(
+      "gh",
+      expect.arrayContaining(["secret", "set"]),
+    );
     const combined = warnings.join("\n");
     expect(combined).not.toContain(secret);
   });

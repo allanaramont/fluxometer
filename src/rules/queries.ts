@@ -97,27 +97,64 @@ export async function topConsumer(pool: Pool): Promise<RuleResult[]> {
   }));
 }
 
+const ERROR_RATE_THRESHOLD = 0.02;
+const MIN_BUCKET_VOLUME = 10;
+
+/** The only trigger is one daily cron run (spec: "um único cron diário"),
+ * so a plain "last 1 hour" window would miss 23 of every 24 hours — an
+ * outage at 3am would never show up in an 8am report. Instead, every
+ * hourly bucket in the last 24h is checked and each route's worst bucket
+ * is what gets evaluated against the threshold. */
 export async function errorSpike(pool: Pool): Promise<RuleResult[]> {
   const { rows } = await pool.query(
-    `select route, avg((status >= 500)::int) as error_rate, count(*) as reqs
+    `select route, avg((status >= 500)::int) as rate, count(*) as reqs
      from ${SCHEMA_NAME}.request_metrics
-     where created_at > now() - interval '1 hour'
-     group by route
-     having count(*) >= 10 and avg((status >= 500)::int) > 0.02`,
+     where created_at > now() - interval '24 hours'
+     group by route, date_trunc('hour', created_at)
+     having count(*) >= ${MIN_BUCKET_VOLUME}`,
   );
-  return rows.map((row) => ({
-    ruleId: "error_spike" as const,
-    severity: "high" as const,
-    subject: row.route,
-    metrics: { taxaErro: num(row.error_rate), reqs: num(row.reqs) },
-  }));
+  return worstBucketPerRoute(rows)
+    .filter((bucket) => bucket.rate > ERROR_RATE_THRESHOLD)
+    .map((bucket) => ({
+      ruleId: "error_spike" as const,
+      severity: "high" as const,
+      subject: bucket.route,
+      metrics: { taxaErro: bucket.rate, reqs: bucket.reqs },
+    }));
 }
 
+type Bucket = { route: string; rate: number; reqs: number };
+
+function worstBucketPerRoute(
+  rows: { route: string; rate: unknown; reqs: unknown }[],
+): Bucket[] {
+  const worstByRoute = new Map<string, Bucket>();
+  for (const row of rows) {
+    const bucket: Bucket = {
+      route: row.route,
+      rate: num(row.rate),
+      reqs: num(row.reqs),
+    };
+    const current = worstByRoute.get(row.route);
+    if (!current || bucket.rate > current.rate) {
+      worstByRoute.set(row.route, bucket);
+    }
+  }
+  return [...worstByRoute.values()];
+}
+
+/** `pg_stat_statements` is cluster-wide and can contain DDL the app ran
+ * itself — including this very package's own `create/alter role ...
+ * password '<literal>'` during `init`/`rotate`. Scoped to the current
+ * database and filtered to never surface anything that looks like it
+ * carries a password, so that text never reaches the Slack report. */
 export async function slowQuery(pool: Pool): Promise<RuleResult[]> {
   const { rows } = await pool.query(
     `select query, mean_exec_time, calls
      from pg_stat_statements
-     where mean_exec_time > 200
+     where dbid = (select oid from pg_database where datname = current_database())
+       and mean_exec_time > 200
+       and query not ilike '%password%'
      order by mean_exec_time desc
      limit 5`,
   );
@@ -156,54 +193,82 @@ export async function highVariance(pool: Pool): Promise<RuleResult[]> {
     }));
 }
 
+const PLATFORM_ERROR_MULTIPLIER = 2;
+
+/** With only two platforms (the common web-vs-ios case), a plain
+ * `rate > mean + stdev` filter can never fire: for rates [a, b],
+ * mean + stdev always equals max(a, b) exactly, excluding it from a
+ * strict `>` test. Instead, each platform's rate is compared against the
+ * pooled rate of every *other* platform, with an absolute floor so a
+ * platform with zero other-platform errors to compare against isn't
+ * flagged for noise. */
 export async function platformErrorConcentration(
   pool: Pool,
 ): Promise<RuleResult[]> {
   const { rows } = await pool.query(
-    `select platform, avg((status >= 500)::int) as error_rate, count(*) as reqs
+    `select platform, sum((status >= 500)::int) as errors, count(*) as reqs
      from ${SCHEMA_NAME}.request_metrics
      where created_at > now() - interval '24 hours' and platform is not null
      group by platform
      having count(*) >= 20`,
   );
   if (rows.length < 2) return [];
-  const rates = rows.map((row) => num(row.error_rate));
-  const mean = rates.reduce((a, b) => a + b, 0) / rates.length;
-  const variance =
-    rates.reduce((a, b) => a + (b - mean) ** 2, 0) / rates.length;
-  const stdev = Math.sqrt(variance);
-  if (stdev === 0) return [];
-  return rows
-    .filter((row) => num(row.error_rate) > mean + stdev)
-    .map((row) => ({
-      ruleId: "platform_error_concentration" as const,
-      severity: "medium" as const,
-      subject: row.platform,
-      metrics: {
-        taxaErro: num(row.error_rate),
-        mediaOutrasPlataformas: mean,
-        reqs: num(row.reqs),
-      },
-    }));
+
+  const platforms = rows.map((row) => ({
+    platform: row.platform,
+    errors: num(row.errors),
+    reqs: num(row.reqs),
+  }));
+  const totalErrors = platforms.reduce((a, p) => a + p.errors, 0);
+  const totalReqs = platforms.reduce((a, p) => a + p.reqs, 0);
+
+  const results: RuleResult[] = [];
+  for (const p of platforms) {
+    const restErrors = totalErrors - p.errors;
+    const restReqs = totalReqs - p.reqs;
+    const restRate = restReqs > 0 ? restErrors / restReqs : 0;
+    const rate = p.reqs > 0 ? p.errors / p.reqs : 0;
+    const isWorseThanTheRest = rate > restRate * PLATFORM_ERROR_MULTIPLIER;
+    const isMeaningfullyBad = rate > ERROR_RATE_THRESHOLD;
+    if (isWorseThanTheRest && isMeaningfullyBad) {
+      results.push({
+        ruleId: "platform_error_concentration" as const,
+        severity: "medium" as const,
+        subject: p.platform,
+        metrics: {
+          taxaErro: rate,
+          mediaOutrasPlataformas: restRate,
+          reqs: p.reqs,
+        },
+      });
+    }
+  }
+  return results;
 }
 
 const TIMEOUT_STATUSES = [504, 408];
+const TIMEOUT_RATE_THRESHOLD = 0.01;
 
+/** Same 24h-worst-bucket reasoning as errorSpike — a daily cron can't
+ * rely on a "last 1 hour" window to catch a timeout spike that happened
+ * at any other hour of the day. */
 export async function timeoutSpike(pool: Pool): Promise<RuleResult[]> {
   const { rows } = await pool.query(
-    `select route, avg((status = any($1))::int) as timeout_rate, count(*) as reqs
+    `select route, avg((status = any($1))::int) as rate, count(*) as reqs
      from ${SCHEMA_NAME}.request_metrics
-     where created_at > now() - interval '1 hour'
-     group by route
-     having count(*) >= 10 and avg((status = any($1))::int) > 0.01`,
+     where created_at > now() - interval '24 hours'
+     group by route, date_trunc('hour', created_at)
+     having count(*) >= ${MIN_BUCKET_VOLUME}`,
     [TIMEOUT_STATUSES],
   );
-  return rows.map((row) => ({
-    ruleId: "timeout_spike" as const,
-    severity: "high" as const,
-    subject: row.route,
-    metrics: { taxaTimeout: num(row.timeout_rate), reqs: num(row.reqs) },
-  }));
+  return worstBucketPerRoute(rows)
+    .filter((bucket) => bucket.rate > TIMEOUT_RATE_THRESHOLD)
+    .map((bucket) => ({
+      ruleId: "timeout_spike" as const,
+      severity: "high" as const,
+      subject: bucket.route,
+      metrics: { taxaTimeout: bucket.rate, reqs: bucket.reqs },
+    }));
 }
 
 export async function aiCostSpike(pool: Pool): Promise<RuleResult[]> {

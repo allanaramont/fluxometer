@@ -34,4 +34,13 @@ describe("postToSlack", () => {
       expect.objectContaining({ method: "POST" }),
     );
   });
+
+  it("throws when Slack rejects the webhook, instead of resolving as if it worked", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response("invalid_token", { status: 404 }),
+    );
+    await expect(
+      postToSlack("https://hooks.slack.com/services/revoked", "hello"),
+    ).rejects.toThrow(/404/);
+  });
 });

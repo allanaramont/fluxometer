@@ -17,6 +17,7 @@
     "./express": "./dist/adapters/express.js",
     "./fastify": "./dist/adapters/fastify.js",
     "./next": "./dist/adapters/next.js",
+    "./report": "./dist/report/route.js",
     "./package.json": "./package.json"
   },
   "files": [

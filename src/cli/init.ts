@@ -3,9 +3,15 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { Pool } from "pg";
 import { runMigration } from "../core/schema.js";
+import { setEnvLine } from "./envFile.js";
 import { githubActionsTemplate, vercelCronTemplate } from "./templates.js";
 
-const execFileAsync = promisify(execFile);
+export type ExecFileFn = (
+  file: string,
+  args: string[],
+) => Promise<{ stdout: string; stderr: string }>;
+
+const defaultExecFile: ExecFileFn = promisify(execFile);
 
 export type MissingDatabaseUrlError = {
   code: "missing_database_url";
@@ -43,6 +49,7 @@ export type RunInitOptions = {
   prompt: (question: string) => Promise<string>;
   env: NodeJS.ProcessEnv;
   fs: FsLike;
+  execFile?: ExecFileFn;
 };
 
 export async function readFileOrEmpty(
@@ -82,6 +89,11 @@ export async function createReadonlyRole(
     await pool.query(
       `grant select on all tables in schema fluxometer to fluxometer_readonly`,
     );
+    // Keeps a future table (this plan already added one — deploy_markers)
+    // visible to the role without a manual re-grant.
+    await pool.query(
+      `alter default privileges in schema fluxometer grant select on tables to fluxometer_readonly`,
+    );
     const url = new URL(databaseUrl);
     url.username = "fluxometer_readonly";
     url.password = password;
@@ -103,9 +115,10 @@ export async function createReadonlyRole(
 export async function setGitHubSecret(
   name: string,
   value: string,
+  exec: ExecFileFn = defaultExecFile,
 ): Promise<void> {
   try {
-    await execFileAsync("gh", ["secret", "set", name, "--body", value]);
+    await exec("gh", ["secret", "set", name, "--body", value]);
   } catch {
     // Never log the secret value itself — it was already written to .env;
     // point the operator there instead of printing it again.
@@ -125,6 +138,7 @@ export async function runInit(opts: RunInitOptions): Promise<void> {
     };
     throw error;
   }
+  const exec = opts.execFile ?? defaultExecFile;
 
   const pool = new Pool({ connectionString: databaseUrl });
   try {
@@ -133,25 +147,50 @@ export async function runInit(opts: RunInitOptions): Promise<void> {
     const webhookUrl = await opts.prompt(
       "Slack incoming webhook URL (create one at https://api.slack.com/apps -> Incoming Webhooks): ",
     );
+    const reportUrl = await opts.prompt(
+      "Public URL that will receive the daily report (e.g. https://yourapp.com/api/fluxometer/report): ",
+    );
     const readonlyUrl = await createReadonlyRole(pool, databaseUrl);
     const cronSecret = randomBytes(32).toString("hex");
-    await setGitHubSecret("FLUXOMETER_CRON_SECRET", cronSecret);
+    await setGitHubSecret("FLUXOMETER_CRON_SECRET", cronSecret, exec);
+    if (reportUrl) {
+      await setGitHubSecret("FLUXOMETER_REPORT_URL", reportUrl, exec);
+    }
 
-    const envLines = [
-      `FLUXOMETER_SLACK_WEBHOOK_URL=${webhookUrl}`,
-      `FLUXOMETER_CRON_SECRET=${cronSecret}`,
-      readonlyUrl ? `FLUXOMETER_READONLY_URL=${readonlyUrl}` : undefined,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
-    await writeSecretFile(opts.fs, ".env", `${envLines}\n`);
+    // Merge into any existing .env — this is the app's own file and may
+    // already hold DATABASE_URL and unrelated secrets that must survive.
+    const existingEnv = await readFileOrEmpty(opts.fs, ".env");
+    let updatedEnv = setEnvLine(
+      existingEnv,
+      "FLUXOMETER_SLACK_WEBHOOK_URL",
+      webhookUrl,
+    );
+    updatedEnv = setEnvLine(updatedEnv, "FLUXOMETER_CRON_SECRET", cronSecret);
+    if (reportUrl) {
+      updatedEnv = setEnvLine(updatedEnv, "FLUXOMETER_REPORT_URL", reportUrl);
+    }
+    if (readonlyUrl) {
+      updatedEnv = setEnvLine(
+        updatedEnv,
+        "FLUXOMETER_READONLY_URL",
+        readonlyUrl,
+      );
+    }
+    await writeSecretFile(opts.fs, ".env", updatedEnv);
 
     await opts.fs.mkdir(".github/workflows", { recursive: true });
     await opts.fs.writeFile(
       ".github/workflows/fluxometer-report.yml",
       githubActionsTemplate(),
     );
-    await opts.fs.writeFile("vercel.json", vercelCronTemplate());
+    // Never opts.fs.writeFile("vercel.json", ...) — that file is the host
+    // app's own Vercel config (routes, functions, regions...) and this
+    // package has no business overwriting it. The cron snippet goes to
+    // its own file; the README shows how to merge it by hand.
+    await opts.fs.writeFile(
+      "fluxometer.vercel-cron.json",
+      vercelCronTemplate(),
+    );
 
     const gitignore = await readFileOrEmpty(opts.fs, ".gitignore");
     if (!/^\s*\.env\s*$/m.test(gitignore)) {

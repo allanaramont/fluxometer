@@ -9,6 +9,10 @@ import * as slackSend from "./slackSend.js";
 const DUPLICATE_GUARD_MS = 5 * 60 * 1000;
 let lastRunAt = 0;
 
+export function resetDuplicateGuardForTesting(): void {
+  lastRunAt = 0;
+}
+
 export type FluxometerRequest = {
   header: (name: string) => string | undefined;
 };
@@ -29,19 +33,31 @@ export async function handleReportRequest(
   if (now - lastRunAt < DUPLICATE_GUARD_MS) {
     return { status: 200, body: "ok" };
   }
-  lastRunAt = now;
 
-  const pool = getPool();
-  const results = await runEngine(pool);
-  const locale = (process.env.FLUXOMETER_LOCALE as Locale | undefined) ?? "en";
-  const text = formatSlackReport(results, locale);
+  try {
+    const pool = getPool();
+    const results = await runEngine(pool);
+    const locale =
+      (process.env.FLUXOMETER_LOCALE as Locale | undefined) ?? "en";
+    const text = formatSlackReport(results, locale);
 
-  const webhookUrl = process.env.FLUXOMETER_SLACK_WEBHOOK_URL;
-  if (webhookUrl) {
-    await slackSend.postToSlack(webhookUrl, text);
+    const webhookUrl = process.env.FLUXOMETER_SLACK_WEBHOOK_URL;
+    if (webhookUrl) {
+      await slackSend.postToSlack(webhookUrl, text);
+    } else {
+      console.warn(
+        "fluxometer: no Slack webhook configured (FLUXOMETER_SLACK_WEBHOOK_URL) — report computed but not sent anywhere.",
+      );
+    }
+
+    await cleanupOldRows(pool);
+
+    // Only mark the run complete once it actually succeeded — a failed
+    // attempt must not block an immediate retry for the next 5 minutes.
+    lastRunAt = now;
+    return { status: 200, body: "ok" };
+  } catch (err) {
+    console.error("fluxometer: daily report run failed", err);
+    return { status: 500, body: "report failed" };
   }
-
-  await cleanupOldRows(pool);
-
-  return { status: 200, body: "ok" };
 }
