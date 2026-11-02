@@ -5,11 +5,15 @@ import { trackRequest } from "../core/writer.js";
 const NUMERIC_SEGMENT = /^\d+$/;
 const UUID_SEGMENT =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** Conservative allowlist for a static path segment (kebab/camel/snake
- * case, bounded length). Anything else — opaque tokens, oversized
- * segments, unexpected characters — buckets the whole route under
- * `<unmatched>` rather than being recorded verbatim. */
-const SAFE_STATIC_SEGMENT = /^[a-zA-Z0-9_-]{0,40}$/;
+/** Conservative allowlist for a static path segment: Unicode letters and
+ * digits, dot/underscore/hyphen, bounded length. Anything else — opaque
+ * tokens, oversized segments, unexpected characters — buckets the whole
+ * route under `<unmatched>` rather than being recorded verbatim. Letters
+ * and digits are Unicode-aware (not just ASCII) and `.` is included so
+ * ordinary static assets (`favicon.ico`) and non-English slugs
+ * (`/produtos/ação`) aren't swept into `<unmatched>` along with actually
+ * opaque content. */
+const SAFE_STATIC_SEGMENT = /^[\p{L}\p{N}_.-]{0,40}$/u;
 const UNMATCHED_ROUTE = "<unmatched>";
 
 /** Next.js middleware runs before route params are resolved, so there is
@@ -43,7 +47,10 @@ export function fluxometer(middleware?: NextMiddleware): NextMiddleware {
     trackRequest({
       route: normalizeRoute(req.nextUrl.pathname),
       method: req.method,
-      status: response instanceof NextResponse ? response.status : 200,
+      // NextResponse extends the standard Response — middleware may
+      // legitimately return a plain Response (e.g. `new Response(null,
+      // { status: 401 })`), which would otherwise be read as status 200.
+      status: response instanceof Response ? response.status : 200,
       durationMs,
     });
     return response ?? NextResponse.next();

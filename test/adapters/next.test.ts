@@ -8,6 +8,7 @@ function buildMockNextRequest(overrides: {
 }): NextRequest {
   return {
     nextUrl: { pathname: overrides.nextUrl.pathname },
+    method: "GET",
   } as unknown as NextRequest;
 }
 
@@ -47,6 +48,45 @@ describe("fluxometer (Next.js adapter)", () => {
 
     expect(trackSpy).toHaveBeenCalledWith(
       expect.objectContaining({ route: "<unmatched>" }),
+    );
+  });
+
+  it("allows dots and accented letters in a static segment instead of bucketing common real routes as unmatched", async () => {
+    const trackSpy = vi
+      .spyOn(writer, "trackRequest")
+      .mockImplementation(() => {});
+    const wrapped = fluxometer((_req) => NextResponse.next());
+
+    await wrapped(
+      buildMockNextRequest({ nextUrl: { pathname: "/favicon.ico" } }),
+      {} as any,
+    );
+    await wrapped(
+      buildMockNextRequest({ nextUrl: { pathname: "/produtos/ação" } }),
+      {} as any,
+    );
+
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "/favicon.ico" }),
+    );
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "/produtos/ação" }),
+    );
+  });
+
+  it("records the real status when the wrapped middleware returns a plain Response instead of a NextResponse", async () => {
+    const trackSpy = vi
+      .spyOn(writer, "trackRequest")
+      .mockImplementation(() => {});
+    const wrapped = fluxometer((_req) => new Response("no", { status: 401 }));
+
+    await wrapped(
+      buildMockNextRequest({ nextUrl: { pathname: "/admin" } }),
+      {} as any,
+    );
+
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401 }),
     );
   });
 });

@@ -38,4 +38,30 @@ describe("expressMiddleware", () => {
       expect.objectContaining({ route: "<unmatched>", status: 404 }),
     );
   });
+
+  it("includes the router's mount prefix, so two versioned routers with the same relative route don't collide", async () => {
+    const trackSpy = vi
+      .spyOn(writer, "trackRequest")
+      .mockImplementation(() => {});
+    const app = express();
+    app.use(expressMiddleware());
+    const v1 = express.Router();
+    v1.get("/users/:id", (_req, res) => res.status(200).send("v1"));
+    const v2 = express.Router();
+    v2.get("/users/:id", (_req, res) => res.status(200).send("v2"));
+    app.use("/api/v1", v1);
+    app.use("/api/v2", v2);
+
+    await request(app).get("/api/v1/users/1");
+    await new Promise((resolve) => setImmediate(resolve));
+    await request(app).get("/api/v2/users/1");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "/api/v1/users/:id" }),
+    );
+    expect(trackSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ route: "/api/v2/users/:id" }),
+    );
+  });
 });
