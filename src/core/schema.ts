@@ -42,6 +42,12 @@ create table if not exists ${SCHEMA_NAME}.ai_calls (
   success boolean not null,
   user_hash text
 );
+
+create table if not exists ${SCHEMA_NAME}.deploy_markers (
+  id bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  deploy_id text not null
+);
 `;
 
 export async function runMigration(pool: Pool): Promise<void> {

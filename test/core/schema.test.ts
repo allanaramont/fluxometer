@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import { runMigration } from "../../src/core/schema.js";
 
 describe("runMigration", () => {
-  it("creates the fluxometer schema and its three tables idempotently", async () => {
+  it("creates the fluxometer schema and its four tables idempotently", async () => {
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     try {
       await runMigration(pool);
@@ -14,6 +14,7 @@ describe("runMigration", () => {
       expect(rows.map((r) => r.table_name).sort()).toEqual([
         "ai_calls",
         "client_metrics",
+        "deploy_markers",
         "request_metrics",
       ]);
     } finally {
