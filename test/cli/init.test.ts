@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
+import { describe, expect, it, vi } from "vitest";
+
 import {
   createReadonlyRole,
+  type FsLike,
   runInit,
   setGitHubSecret,
-  type FsLike,
 } from "../../src/cli/init.js";
 
 const HEX_64 = /[0-9a-f]{64}/i;
@@ -112,6 +113,23 @@ describe("runInit", () => {
     expect(combined).toContain("<CHOOSE_A_PASSWORD>");
   });
 
+  it("includes the Postgres error code (SQLSTATE) in the fallback warning, to help diagnose permission vs. connectivity failures", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    });
+    const permissionDenied = Object.assign(new Error("permission denied"), {
+      code: "42501",
+    });
+    const brokenPool = {
+      query: () => Promise.reject(permissionDenied),
+    } as unknown as Pool;
+
+    await createReadonlyRole(brokenPool, "postgres://x/y");
+
+    expect(warnings.join("\n")).toContain("42501");
+  });
+
   it("sets the role's actual password on every call, even when the role already exists from a previous run", async () => {
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
     try {
@@ -157,8 +175,29 @@ describe("runInit", () => {
     expect(failingExec).toHaveBeenCalledWith(
       "gh",
       expect.arrayContaining(["secret", "set"]),
+      secret,
     );
     const combined = warnings.join("\n");
     expect(combined).not.toContain(secret);
+  });
+
+  it("passes the secret via stdin (--body-file -), never as a command-line argument readable via ps", async () => {
+    const secret = "b".repeat(64);
+    const exec = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+
+    await setGitHubSecret("FLUXOMETER_CRON_SECRET", secret, exec);
+
+    const [, args, input] = exec.mock.calls[0]!;
+    expect(args).not.toContain(secret);
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "secret",
+        "set",
+        "FLUXOMETER_CRON_SECRET",
+        "--body-file",
+        "-",
+      ]),
+    );
+    expect(input).toBe(secret);
   });
 });

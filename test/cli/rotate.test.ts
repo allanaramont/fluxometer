@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+
 import type { FsLike } from "../../src/cli/init.js";
 import { describeRotateResult, runRotate } from "../../src/cli/rotate.js";
 

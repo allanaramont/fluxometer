@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
 import { createInterface } from "node:readline/promises";
+
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+
+import { describeCliError } from "../core/errors.js";
 import { createMcpServer } from "../mcp/server.js";
 import { parseArgv } from "./argv.js";
 import { runInit } from "./init.js";
@@ -44,6 +47,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error(`fluxometer: ${describeCliError(err)}`);
   process.exitCode = 1;
 });

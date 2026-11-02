@@ -1,22 +1,34 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { promisify } from "node:util";
+
 import { Pool } from "pg";
+
+import { FluxometerError } from "../core/errors.js";
 import { runMigration } from "../core/schema.js";
-import { setEnvLine } from "./envFile.js";
+import { isEnvIgnored, setEnvLine } from "./envFile.js";
 import { githubActionsTemplate, vercelCronTemplate } from "./templates.js";
 
 export type ExecFileFn = (
   file: string,
   args: string[],
+  input?: string,
 ) => Promise<{ stdout: string; stderr: string }>;
 
-const defaultExecFile: ExecFileFn = promisify(execFile);
-
-export type MissingDatabaseUrlError = {
-  code: "missing_database_url";
-  message: string;
-};
+/** `util.promisify(execFile)` can't pipe stdin — the promisified wrapper
+ * only sees the callback, not the `ChildProcess` to write to. Writing
+ * this by hand is what lets `setGitHubSecret` send the secret via stdin
+ * instead of as a command-line argument (visible to anyone who can run
+ * `ps` on the machine while it runs). */
+const defaultExecFile: ExecFileFn = (file, args, input) =>
+  new Promise((resolve, reject) => {
+    const child = execFile(file, args, (err, stdout, stderr) => {
+      if (err) reject(err);
+      else resolve({ stdout, stderr });
+    });
+    if (input !== undefined) {
+      child.stdin?.end(input);
+    }
+  });
 
 /** The minimal filesystem surface `runInit` needs, satisfied in production
  * by `node:fs/promises` and in tests by a small in-memory fake. */
@@ -98,12 +110,18 @@ export async function createReadonlyRole(
     url.username = "fluxometer_readonly";
     url.password = password;
     return url.toString();
-  } catch {
-    // Never log the generated password, nor the underlying error (which may
-    // itself echo connection details) — print a template the operator fills
-    // in with their own password instead.
+  } catch (err) {
+    // Never log the generated password, nor the underlying error's full
+    // text (which may itself echo connection details) — but the Postgres
+    // error code (SQLSTATE, e.g. 42501 = permission denied) alone leaks
+    // nothing and saves real debugging time distinguishing "no
+    // permission" from "can't connect at all".
+    const sqlState =
+      err && typeof err === "object" && "code" in err
+        ? ` (${String(err.code)})`
+        : "";
     console.warn(
-      "fluxometer: could not create the readonly role automatically. Run this SQL yourself, choosing your own password:\n" +
+      `fluxometer: could not create the readonly role automatically${sqlState}. Run this SQL yourself, choosing your own password:\n` +
         "  create role fluxometer_readonly login password '<CHOOSE_A_PASSWORD>';\n" +
         "  grant usage on schema fluxometer to fluxometer_readonly;\n" +
         "  grant select on all tables in schema fluxometer to fluxometer_readonly;",
@@ -118,7 +136,10 @@ export async function setGitHubSecret(
   exec: ExecFileFn = defaultExecFile,
 ): Promise<void> {
   try {
-    await exec("gh", ["secret", "set", name, "--body", value]);
+    // --body-file - reads from stdin, so the secret never appears as a
+    // command-line argument (which `--body <value>` would, visible to
+    // anyone on the machine running `ps` while this executes).
+    await exec("gh", ["secret", "set", name, "--body-file", "-"], value);
   } catch {
     // Never log the secret value itself — it was already written to .env;
     // point the operator there instead of printing it again.
@@ -131,12 +152,10 @@ export async function setGitHubSecret(
 export async function runInit(opts: RunInitOptions): Promise<void> {
   const databaseUrl = opts.env.DATABASE_URL;
   if (!databaseUrl) {
-    const error: MissingDatabaseUrlError = {
-      code: "missing_database_url",
-      message:
-        "DATABASE_URL is not set. Set it to your app's Postgres connection string and run `fluxometer init` again.",
-    };
-    throw error;
+    throw new FluxometerError(
+      "missing_database_url",
+      "DATABASE_URL is not set. Set it to your app's Postgres connection string and run `fluxometer init` again.",
+    );
   }
   const exec = opts.execFile ?? defaultExecFile;
 
@@ -193,7 +212,7 @@ export async function runInit(opts: RunInitOptions): Promise<void> {
     );
 
     const gitignore = await readFileOrEmpty(opts.fs, ".gitignore");
-    if (!/^\s*\.env\s*$/m.test(gitignore)) {
+    if (!isEnvIgnored(gitignore)) {
       console.warn(
         "fluxometer: .env is not listed in .gitignore — add it before committing.",
       );
