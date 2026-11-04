@@ -165,6 +165,13 @@ peak-hour bottlenecks, and post-deploy regressions. Each comes with a
 one-line likely cause and suggested fix, in English, Spanish or
 Portuguese (`FLUXOMETER_LOCALE`).
 
+## Agent skill
+
+[`skills/fluxometer/SKILL.md`](./skills/fluxometer/SKILL.md) teaches AI coding
+agents (Claude Code, Cursor, Copilot and others) when to call the MCP tool,
+how to read each rule and where to look in your code to fix it. Drop the
+`skills/fluxometer` folder into your agent's skills directory.
+
 ## Security
 
 See [SECURITY.md](./SECURITY.md) for the full credential model.
