@@ -3,6 +3,26 @@
   "version": "0.1.0",
   "description": "Zero-cost performance & bottleneck observability for JS/TS + Postgres apps — daily Slack summary and a local MCP server, no dashboard, no paid infra.",
   "license": "MIT",
+  "author": "Allan Monteiro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/allanaramont/fluxometer.git"
+  },
+  "homepage": "https://github.com/allanaramont/fluxometer#readme",
+  "bugs": {
+    "url": "https://github.com/allanaramont/fluxometer/issues"
+  },
+  "keywords": [
+    "observability",
+    "postgres",
+    "performance",
+    "monitoring",
+    "slack",
+    "mcp",
+    "express",
+    "fastify",
+    "next"
+  ],
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -30,6 +50,7 @@
     "LICENSE"
   ],
   "scripts": {
+    "prepublishOnly": "npm run lint && npm test && npm run build",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit && eslint ."
