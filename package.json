@@ -33,12 +33,36 @@
   "main": "./dist/adapters/generic.js",
   "types": "./dist/adapters/generic.d.ts",
   "exports": {
-    ".": "./dist/adapters/generic.js",
-    "./express": "./dist/adapters/express.js",
-    "./fastify": "./dist/adapters/fastify.js",
-    "./next": "./dist/adapters/next.js",
-    "./report": "./dist/report/route.js",
-    "./migrate": "./dist/migrate.js",
+    ".": {
+      "types": "./dist/adapters/generic.d.ts",
+      "import": "./dist/adapters/generic.js",
+      "require": "./dist/cjs/adapters/generic.js"
+    },
+    "./express": {
+      "types": "./dist/adapters/express.d.ts",
+      "import": "./dist/adapters/express.js",
+      "require": "./dist/cjs/adapters/express.js"
+    },
+    "./fastify": {
+      "types": "./dist/adapters/fastify.d.ts",
+      "import": "./dist/adapters/fastify.js",
+      "require": "./dist/cjs/adapters/fastify.js"
+    },
+    "./next": {
+      "types": "./dist/adapters/next.d.ts",
+      "import": "./dist/adapters/next.js",
+      "require": "./dist/cjs/adapters/next.js"
+    },
+    "./report": {
+      "types": "./dist/report/route.d.ts",
+      "import": "./dist/report/route.js",
+      "require": "./dist/cjs/report/route.js"
+    },
+    "./migrate": {
+      "types": "./dist/migrate.d.ts",
+      "import": "./dist/migrate.js",
+      "require": "./dist/cjs/migrate.js"
+    },
     "./package.json": "./package.json"
   },
   "overrides": {
@@ -51,8 +75,9 @@
     "LICENSE"
   ],
   "scripts": {
-    "prepublishOnly": "npm run lint && npm test && npm run build",
-    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run lint && npm test && npm run build && npm run smoke-test",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "smoke-test": "node scripts/smoke-test-dual-build.cjs",
     "test": "vitest run",
     "lint": "tsc -p tsconfig.json --noEmit && eslint ."
   },
