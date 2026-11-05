@@ -51,7 +51,7 @@ export function trackRequest(input: RequestMetric): void {
         input.route,
         input.method,
         input.status,
-        input.durationMs,
+        Math.round(input.durationMs),
         input.userHash ?? null,
         input.platform ?? null,
       ],
@@ -69,7 +69,7 @@ export function trackClientMetric(input: ClientMetric): void {
       [
         input.screen,
         input.action,
-        input.durationMs,
+        Math.round(input.durationMs),
         input.appVersion ?? null,
         input.platform ?? null,
       ],
@@ -86,7 +86,7 @@ export function trackAiCall(input: AiCallMetric): void {
        values ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         input.model,
-        input.durationMs,
+        Math.round(input.durationMs),
         input.inputTokens ?? null,
         input.outputTokens ?? null,
         input.costUsd ?? null,

@@ -6,6 +6,8 @@ import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
   cleanupOldRows,
   resetDeployMarkerForTesting,
+  trackAiCall,
+  trackClientMetric,
   trackRequest,
 } from "../../src/core/writer.js";
 
@@ -14,6 +16,8 @@ const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 beforeEach(async () => {
   await runMigration(pool);
   await pool.query(`delete from ${SCHEMA_NAME}.request_metrics`);
+  await pool.query(`delete from ${SCHEMA_NAME}.client_metrics`);
+  await pool.query(`delete from ${SCHEMA_NAME}.ai_calls`);
   await pool.query(`delete from ${SCHEMA_NAME}.deploy_markers`);
   setPoolForTesting(pool);
   resetDeployMarkerForTesting();
@@ -51,6 +55,50 @@ describe("trackRequest", () => {
       duration_ms: 42,
       platform: "web",
     });
+  });
+
+  it("rounds a non-integer durationMs instead of failing the insert - duration_ms is a Postgres int column, and real timers (hrtime, performance.now) always produce fractional milliseconds", async () => {
+    trackRequest({
+      route: "/x",
+      method: "GET",
+      status: 200,
+      durationMs: 8.515943,
+    });
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select duration_ms from ${SCHEMA_NAME}.request_metrics`,
+    );
+    expect(rows[0]).toEqual({ duration_ms: 9 });
+  });
+});
+
+describe("trackClientMetric", () => {
+  it("rounds a non-integer durationMs instead of failing the insert", async () => {
+    trackClientMetric({
+      screen: "home",
+      action: "load",
+      durationMs: 8.515943,
+    });
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select duration_ms from ${SCHEMA_NAME}.client_metrics`,
+    );
+    expect(rows[0]).toEqual({ duration_ms: 9 });
+  });
+});
+
+describe("trackAiCall", () => {
+  it("rounds a non-integer durationMs instead of failing the insert", async () => {
+    trackAiCall({
+      model: "claude",
+      durationMs: 8.515943,
+      success: true,
+    });
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select duration_ms from ${SCHEMA_NAME}.ai_calls`,
+    );
+    expect(rows[0]).toEqual({ duration_ms: 9 });
   });
 });
 
