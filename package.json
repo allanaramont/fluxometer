@@ -1,6 +1,6 @@
 {
   "name": "fluxometer",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Zero-cost performance & bottleneck observability for JS/TS + Postgres apps — daily Slack summary and a local MCP server, no dashboard, no paid infra.",
   "license": "MIT",
   "author": {
