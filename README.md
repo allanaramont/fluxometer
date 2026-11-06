@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/allanaramont/fluxometer/master/.github/assets/fluxometer-logo.png" alt="fluxometer logo" width="120">
+</p>
+
 # fluxometer
 
 Zero-cost performance & bottleneck observability for JS/TS + Postgres apps —
@@ -6,6 +10,10 @@ ask your AI assistant "what should I look at today?"
 
 No dashboard to build or secure. No paid SaaS. No data leaving your own
 infra.
+
+Built and maintained by Allan Monteiro at [DesenvBR Group](https://desenvbr.com).
+
+![Daily summary posted to your team channel](https://raw.githubusercontent.com/allanaramont/fluxometer/master/.github/assets/fluxometer-daily-report.png)
 
 ## Install
 
@@ -157,6 +165,8 @@ Add it to your MCP client (Claude Desktop, Claude Code, Cursor) pointing
 
 ## What it checks
 
+![The 12 rules fluxometer checks](https://raw.githubusercontent.com/allanaramont/fluxometer/master/.github/assets/fluxometer-rules.png)
+
 12 fixed, deterministic rules — no LLM call, zero extra cost: slow
 routes, week-over-week regressions, the biggest time consumer, error
 spikes, slow queries, high latency variance, platform-specific error
@@ -178,4 +188,4 @@ See [SECURITY.md](./SECURITY.md) for the full credential model.
 
 ## License
 
-MIT
+MIT © Allan Monteiro · [DesenvBR Group](https://desenvbr.com)
