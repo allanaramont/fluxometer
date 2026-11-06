@@ -3,7 +3,10 @@
   "version": "0.3.1",
   "description": "Zero-cost performance & bottleneck observability for JS/TS + Postgres apps — daily Slack summary and a local MCP server, no dashboard, no paid infra.",
   "license": "MIT",
-  "author": "Allan Monteiro",
+  "author": {
+    "name": "Allan Monteiro",
+    "url": "https://desenvbr.com"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/allanaramont/fluxometer.git"
