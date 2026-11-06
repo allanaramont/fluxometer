@@ -1,0 +1,55 @@
+name: Publish to npm
+
+# Publishes the package when a version tag (v1.2.3) is pushed.
+# Auth uses npm trusted publishing (OIDC): no NPM_TOKEN secret needed.
+# One-time setup on npmjs.com: package settings -> Trusted Publisher ->
+# GitHub Actions, user "allanaramont", repo "fluxometer",
+# workflow "publish.yml", with "npm publish" allowed.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write # required for trusted publishing
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fluxometer
+          POSTGRES_PASSWORD: fluxometer
+          POSTGRES_DB: fluxometer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgresql://fluxometer:fluxometer@localhost:5432/fluxometer_test
+      DATABASE_URL: postgresql://fluxometer:fluxometer@localhost:5432/fluxometer_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm CLI 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
+      - name: Check tag matches package.json version
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+      - run: npm install
+      # prepublishOnly runs lint, tests, build and the smoke test first.
+      - run: npm publish
