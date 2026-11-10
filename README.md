@@ -96,22 +96,28 @@ any object with a `header(name)` method, so adapt it to your framework:
 ```ts
 // Express
 import { handleReportRequest } from "fluxometer/report";
-app.post("/api/fluxometer/report", async (req, res) => {
+const report = async (req, res) => {
   const result = await handleReportRequest({
     header: (name) => req.header(name),
   });
   res.status(result.status).send(result.body);
-});
+};
+app.get("/api/fluxometer/report", report); // Vercel Cron always calls with GET
+app.post("/api/fluxometer/report", report); // the GitHub Actions workflow uses POST
 ```
 
 ```ts
 // Fastify
 import { handleReportRequest } from "fluxometer/report";
-app.post("/api/fluxometer/report", async (request, reply) => {
-  const result = await handleReportRequest({
-    header: (name) => request.headers[name.toLowerCase()] as string | undefined,
-  });
-  reply.code(result.status).send(result.body);
+app.route({
+  method: ["GET", "POST"], // GET for Vercel Cron, POST for GitHub Actions
+  url: "/api/fluxometer/report",
+  handler: async (request, reply) => {
+    const result = await handleReportRequest({
+      header: (name) => request.headers[name.toLowerCase()] as string | undefined,
+    });
+    reply.code(result.status).send(result.body);
+  },
 });
 ```
 
@@ -125,14 +131,44 @@ export async function POST(req: Request) {
   });
   return new Response(result.body, { status: result.status });
 }
+export const GET = POST; // Vercel Cron always calls with GET
 ```
 
 That route is what `FLUXOMETER_REPORT_URL` (set during `init`) should
-point to, and what the generated `fluxometer-report.yml` / Vercel Cron
-snippet call once a day with the `x-fluxometer-secret` header. Without
-this route wired up, the cron has nothing to hit and no report is ever
-sent — `init` can't do this part for you since it doesn't know your
-routing setup.
+point to. The generated `fluxometer-report.yml` calls it once a day with
+POST and the `x-fluxometer-secret` header; Vercel Cron calls it with GET
+and `Authorization: Bearer $CRON_SECRET`. The route accepts either
+secret — `FLUXOMETER_CRON_SECRET` or `CRON_SECRET` — so a Vercel app
+doesn't need a second one. Without this route wired up, the cron has
+nothing to hit and no report is ever sent — `init` can't do this part
+for you since it doesn't know your routing setup.
+
+### When the report doesn't arrive
+
+A report that silently stops is worse than no report, so fluxometer
+tells you when it isn't running and why:
+
+- **A run fails** (database down, Slack rejects the post): the route
+  answers 500 and posts a short failure notice to the same Slack channel.
+- **The report stops arriving** (cron missing, wrong URL, wrong or
+  missing secret): the middleware checks at most once an hour, and when
+  there has been no successful report in 26h it posts one alert a day
+  saying what it found — for example "the secret it sent doesn't match
+  FLUXOMETER_CRON_SECRET or CRON_SECRET", "no cron secret is configured
+  in the app", or "the report route hasn't been called at all". Without a
+  Slack webhook, the same message goes to your logs.
+- **Asking your AI assistant**: `whatShouldILookAtToday` lists a
+  `report_not_running` item first, with the same diagnosis.
+- **Logs**: every rejected call logs the exact reason (no secret sent,
+  secret mismatch, or not configured — the route then answers 503).
+
+Attempts are kept in `fluxometer.report_runs` (status and reason only;
+secrets are never stored, and URLs in error messages are redacted). Set
+`FLUXOMETER_WATCHDOG=off` to disable the hourly check.
+
+After upgrading fluxometer, run the migration again so the new table
+exists — `migrate()` from `fluxometer/migrate` is idempotent and safe to
+call on every deploy.
 
 ### Any other JS/TS framework
 

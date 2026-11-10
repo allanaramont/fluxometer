@@ -60,6 +60,14 @@ It returns:
 `"No bottleneck today"` with an empty `items` list is a real answer, not an
 error. Say so plainly and don't invent problems.
 
+If the first item is `report_not_running`, the daily Slack report hasn't
+succeeded in over 26 hours. Its `suggestion` holds the recorded cause
+(secret mismatch, no secret sent, a failed run, or the route never being
+called). Fix that before anything else: check that the cron and the app use
+the same secret (`FLUXOMETER_CRON_SECRET`, or `CRON_SECRET` on Vercel), that
+the report route answers GET as well as POST, and that the migration ran
+after the last upgrade.
+
 ### How to present the result
 
 1. Lead with the count and the single most important item (errors and timeouts
@@ -115,9 +123,9 @@ set), and Git.
      Route Handler.
    - Any other framework: `import { track } from "fluxometer";` then `track.request(...)`
      and, around each LLM call, `track.aiCall({ model, durationMs, costUsd, success })`.
-3. For the daily Slack report, wire the report route (`POST /api/fluxometer/report`
-   using `handleReportRequest` from `fluxometer/report`). The README has the exact
-   snippet for each framework.
+3. For the daily Slack report, wire the report route (`/api/fluxometer/report`
+   for both GET and POST, using `handleReportRequest` from `fluxometer/report`).
+   Vercel Cron calls with GET. The README has the exact snippet for each framework.
 4. Register the MCP server, pointing at the **read-only** role:
    - Claude Code:
      ```

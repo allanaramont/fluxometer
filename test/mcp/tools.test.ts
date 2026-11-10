@@ -13,6 +13,7 @@ const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 beforeEach(async () => {
   await runMigration(pool);
   await pool.query(`delete from ${SCHEMA_NAME}.request_metrics`);
+  await pool.query(`delete from ${SCHEMA_NAME}.report_runs`);
   setReadonlyPoolForTesting(pool);
   for (let i = 0; i < 60; i++) {
     await pool.query(
@@ -48,5 +49,31 @@ describe("whatShouldILookAtToday", () => {
       if (original) process.env.FLUXOMETER_READONLY_URL = original;
       setReadonlyPoolForTesting(pool);
     }
+  });
+
+  it("lists a daily report that stopped arriving first, with the recorded reason", async () => {
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.request_metrics (route, method, status, duration_ms, created_at)
+       values ('/x', 'GET', 200, 10, now() - interval '40 hours')`,
+    );
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.report_runs (status, detail) values ('rejected', 'secret_mismatch')`,
+    );
+
+    const result = await whatShouldILookAtToday({ locale: "en" });
+
+    expect(result.items[0]).toMatchObject({
+      ruleId: "report_not_running",
+      summary: expect.stringMatching(/never run/),
+      suggestion: expect.stringMatching(/doesn't match/),
+    });
+  });
+
+  it("doesn't mention the report when it ran recently", async () => {
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.report_runs (status) values ('ok')`,
+    );
+    const result = await whatShouldILookAtToday({ locale: "en" });
+    expect(result.items.map((i) => i.ruleId)).not.toContain("report_not_running");
   });
 });

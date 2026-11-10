@@ -3,6 +3,14 @@ import { cleanupOldRows } from "../core/writer.js";
 import { runEngine } from "../rules/engine.js";
 import type { Locale } from "../rules/i18n/index.js";
 import { verifyCronSecret } from "./auth.js";
+import {
+  configuredSecrets,
+  notifyReportFailure,
+  recordRejection,
+  recordRun,
+  type RejectionReason,
+  sanitizeErrorDetail,
+} from "./health.js";
 import { formatSlackReport } from "./slackFormat.js";
 import * as slackSend from "./slackSend.js";
 
@@ -33,12 +41,38 @@ function providedSecret(req: FluxometerRequest): string | undefined {
     : undefined;
 }
 
+const REJECTION_LOG: Record<RejectionReason, string> = {
+  secret_not_configured:
+    "fluxometer: report route is not configured — set FLUXOMETER_CRON_SECRET (or CRON_SECRET, which Vercel Cron sends) in the app's environment. Every call is rejected until then.",
+  no_secret_sent:
+    "fluxometer: report call rejected — it sent no secret (expected the x-fluxometer-secret header or Authorization: Bearer).",
+  secret_mismatch:
+    "fluxometer: report call rejected — the secret it sent doesn't match FLUXOMETER_CRON_SECRET or CRON_SECRET. The cron and the app must use the same value.",
+};
+
+function rejectionReason(req: FluxometerRequest): RejectionReason | null {
+  const expected = configuredSecrets();
+  if (expected.length === 0) return "secret_not_configured";
+  const provided = providedSecret(req);
+  if (!provided) return "no_secret_sent";
+  // Both names are accepted at once: the generated GitHub Actions workflow
+  // sends FLUXOMETER_CRON_SECRET, while Vercel Cron always sends its own
+  // CRON_SECRET — an app may use either, or both, without them clashing.
+  return expected.some((secret) => verifyCronSecret(provided, secret))
+    ? null
+    : "secret_mismatch";
+}
+
 export async function handleReportRequest(
   req: FluxometerRequest,
 ): Promise<FluxometerResponse> {
-  const expected = process.env.FLUXOMETER_CRON_SECRET;
-  if (!expected || !verifyCronSecret(providedSecret(req), expected)) {
-    return { status: 401, body: "unauthorized" };
+  const rejection = rejectionReason(req);
+  if (rejection) {
+    console.warn(REJECTION_LOG[rejection]);
+    await recordRejection(rejection);
+    return rejection === "secret_not_configured"
+      ? { status: 503, body: "not configured" }
+      : { status: 401, body: "unauthorized" };
   }
 
   const now = Date.now();
@@ -46,8 +80,8 @@ export async function handleReportRequest(
     return { status: 200, body: "ok" };
   }
 
+  const pool = getPool();
   try {
-    const pool = getPool();
     const results = await runEngine(pool);
     const locale =
       (process.env.FLUXOMETER_LOCALE as Locale | undefined) ?? "en";
@@ -63,6 +97,7 @@ export async function handleReportRequest(
     }
 
     await cleanupOldRows(pool);
+    await recordRun(pool, "ok");
 
     // Only mark the run complete once it actually succeeded — a failed
     // attempt must not block an immediate retry for the next 5 minutes.
@@ -70,6 +105,9 @@ export async function handleReportRequest(
     return { status: 200, body: "ok" };
   } catch (err) {
     console.error("fluxometer: daily report run failed", err);
+    const detail = sanitizeErrorDetail(err);
+    await recordRun(pool, "failed", detail);
+    await notifyReportFailure(detail);
     return { status: 500, body: "report failed" };
   }
 }

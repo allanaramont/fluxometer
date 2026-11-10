@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 
+import { maybeRunStaleReportWatchdog } from "../report/health.js";
 import { getPool, trackPending } from "./pool.js";
 import { SCHEMA_NAME } from "./schema.js";
 import type { AiCallMetric, ClientMetric, RequestMetric } from "./types.js";
@@ -42,6 +43,8 @@ function markDeployOnce(): void {
 
 export function trackRequest(input: RequestMetric): void {
   markDeployOnce();
+  const watchdog = maybeRunStaleReportWatchdog();
+  if (watchdog) trackPending(watchdog);
   const promise = getPool()
     .query(
       `insert into ${SCHEMA_NAME}.request_metrics
@@ -104,6 +107,7 @@ const TABLES = [
   "client_metrics",
   "ai_calls",
   "deploy_markers",
+  "report_runs",
 ] as const;
 
 export async function cleanupOldRows(
