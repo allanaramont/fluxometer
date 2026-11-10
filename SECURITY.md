@@ -36,7 +36,11 @@ home" — every credential stays in your own `.env`/secrets store.
   that could reach a SQL query. This closes the "prompt injection →
   arbitrary query" path.
 - The report route requires a constant-time-compared secret, plus a
-  short duplicate-call guard.
+  short duplicate-call guard. Rejected calls record only the reason
+  (no secret / mismatch / not configured), never the secret sent, and at
+  most once every 10 minutes per process, so hammering the public route
+  can't fill the table. Error details stored in `report_runs` or posted
+  to Slack have URLs (connection strings, webhooks) redacted.
 - Metric writes are fire-and-forget and never throw into your
   application code, no matter what happens to the database connection.
 - `.env` is written with explicit `0600` permissions (enforced with a

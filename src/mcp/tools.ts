@@ -1,6 +1,12 @@
 import { Pool } from "pg";
 
 import { FluxometerError } from "../core/errors.js";
+import {
+  checkReportHealth,
+  describeStaleCause,
+  sanitizeErrorDetail,
+  staleHeadline,
+} from "../report/health.js";
 import { runEngine } from "../rules/engine.js";
 import { type Locale,resolveMessage } from "../rules/i18n/index.js";
 
@@ -53,8 +59,9 @@ export async function whatShouldILookAtToday(input: {
     );
   }
 
-  const results = await runEngine(getReadonlyPool());
-  const items = results.map((result) => {
+  const readonlyPool = getReadonlyPool();
+  const results = await runEngine(readonlyPool);
+  const items: WhatShouldILookAtTodayResult["items"] = results.map((result) => {
     const { summary, suggestion } = resolveMessage(locale, result);
     return {
       ruleId: result.ruleId,
@@ -63,6 +70,25 @@ export async function whatShouldILookAtToday(input: {
       suggestion,
     };
   });
+  // A daily report that stopped arriving is listed first: every other
+  // answer here depends on the same data pipeline being healthy.
+  try {
+    const health = await checkReportHealth(readonlyPool);
+    if (health.stale) {
+      items.unshift({
+        ruleId: "report_not_running",
+        subject: "daily report",
+        summary: staleHeadline(health, locale),
+        suggestion: describeStaleCause(health, locale, false),
+      });
+    }
+  } catch (err) {
+    console.warn(
+      "fluxometer: could not check the daily report's health (older schema, or the read-only role can't read fluxometer.report_runs)",
+      sanitizeErrorDetail(err),
+    );
+  }
+
   const summary =
     items.length > 0 ? `${items.length} issue(s) found` : "No bottleneck today";
   return { summary, items };

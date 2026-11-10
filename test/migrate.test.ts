@@ -18,6 +18,7 @@ describe("migrate", () => {
         "ai_calls",
         "client_metrics",
         "deploy_markers",
+        "report_runs",
         "request_metrics",
       ]);
     } finally {

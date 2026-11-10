@@ -48,6 +48,18 @@ create table if not exists ${SCHEMA_NAME}.deploy_markers (
   created_at timestamptz not null default now(),
   deploy_id text not null
 );
+
+-- One row per daily-report attempt (ok / failed / rejected) plus one per
+-- stale-report alert sent, so fluxometer can tell when the report stopped
+-- arriving and why.
+create table if not exists ${SCHEMA_NAME}.report_runs (
+  id bigint generated always as identity primary key,
+  created_at timestamptz not null default now(),
+  status text not null,
+  detail text
+);
+create index if not exists report_runs_status_created_at_idx
+  on ${SCHEMA_NAME}.report_runs (status, created_at);
 `;
 
 export async function runMigration(pool: Pool): Promise<void> {
