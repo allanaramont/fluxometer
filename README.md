@@ -143,6 +143,32 @@ doesn't need a second one. Without this route wired up, the cron has
 nothing to hit and no report is ever sent — `init` can't do this part
 for you since it doesn't know your routing setup.
 
+### Settings
+
+| Variable | What it does |
+| --- | --- |
+| `FLUXOMETER_SLACK_WEBHOOK_URL` | Where the daily report and alerts are posted |
+| `FLUXOMETER_CRON_SECRET` or `CRON_SECRET` | The secret the report route accepts (either one) |
+| `FLUXOMETER_LOCALE` | `en` (default), `pt` or `es` |
+| `FLUXOMETER_APP_NAME` | Shown in the report header, e.g. "fluxometer · Acme" |
+| `FLUXOMETER_TIMEZONE` | IANA time zone for "hour of day" findings, e.g. `America/Sao_Paulo` (default UTC) |
+| `FLUXOMETER_WATCHDOG` | `off` disables the hourly stale-report check |
+
+### More than one trigger is fine
+
+Vercel Cron on the Hobby plan is best-effort: a run can land anywhere in
+the scheduled hour, and occasionally not at all. You can back it up with
+a second trigger (a GitHub Actions workflow, or Supabase `pg_cron` +
+`pg_net`). The route sends **one report per 6 hours**, however many
+triggers call it, and two calls in the same second can't both send.
+Send the header `x-fluxometer-force: 1` to run it anyway, for example
+when testing by hand.
+
+```sql
+-- Supabase: daily at 08:00 UTC, secret kept in Vault
+select cron.schedule('fluxometer-report', '0 8 * * *', 'select net.http_post(url := ''https://your-app.example.com/api/fluxometer/report'', headers := jsonb_build_object(''Authorization'', ''Bearer '' || (select decrypted_secret from vault.decrypted_secrets where name = ''your_cron_secret'')), body := ''{}''::jsonb, timeout_milliseconds := 60000)');
+```
+
 ### When the report doesn't arrive
 
 A report that silently stops is worse than no report, so fluxometer
@@ -210,6 +236,12 @@ concentration, timeout spikes, AI cost spikes, AI failure rate,
 peak-hour bottlenecks, and post-deploy regressions. Each comes with a
 one-line likely cause and suggested fix, in English, Spanish or
 Portuguese (`FLUXOMETER_LOCALE`).
+
+The slow-query rule only reports the app's own repeated queries: it
+ignores anything that ran fewer than 20 times, migrations, backups
+(`COPY`), DDL, catalog introspection from dashboards and ORMs, and the
+internal schemas and roles managed platforms like Supabase run their own
+services from.
 
 ## Agent skill
 

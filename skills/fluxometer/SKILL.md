@@ -95,7 +95,9 @@ after the last upgrade.
 | `ai_cost_spike` | AI spend up sharply vs last week | Prompt size, model choice, retries; route simple inputs to a smaller model |
 | `ai_failure_rate` | More than 5% failed AI calls (at least 20 calls) in 24h | Provider errors, schema/validation failures, missing fallback |
 
-`slow_query` needs read access to `pg_stat_statements`. On managed Postgres it is
+`slow_query` only lists the app's own repeated queries (at least 20 calls), never
+migrations, backups, DDL, dashboard introspection or a managed platform's internal
+schemas. It needs read access to `pg_stat_statements`. On managed Postgres it is
 often unavailable; the other 11 rules still work. If it never fires, mention that
 as a possible reason, not as a bug.
 

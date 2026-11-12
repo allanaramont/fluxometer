@@ -131,11 +131,16 @@ describe("handleReportRequest", () => {
     });
     resetDuplicateGuardForTesting();
     const viaGithub = await handleReportRequest({
-      header: (n) => (n === "x-fluxometer-secret" ? "test-secret" : undefined),
+      header: (n) =>
+        n === "x-fluxometer-secret"
+          ? "test-secret"
+          : n === "x-fluxometer-force"
+            ? "1"
+            : undefined,
     });
 
-    expect(viaVercel.status).toBe(200);
-    expect(viaGithub.status).toBe(200);
+    expect(viaVercel).toEqual({ status: 200, body: "ok" });
+    expect(viaGithub).toEqual({ status: 200, body: "ok" });
   });
 
   it("answers 503 and says exactly what's missing when no cron secret is configured at all", async () => {
@@ -195,6 +200,10 @@ describe("handleReportRequest", () => {
     expect((await handleReportRequest(req)).status).toBe(200);
 
     resetDuplicateGuardForTesting();
+    await pool.query(`delete from ${SCHEMA_NAME}.report_runs where status = 'ok'`);
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.report_runs (status, created_at) values ('ok', now() - interval '7 hours')`,
+    );
     vi.spyOn(console, "error").mockImplementation(() => {});
     sendSpy
       .mockRejectedValueOnce(
@@ -213,5 +222,66 @@ describe("handleReportRequest", () => {
     const alert = sendSpy.mock.calls.at(-1)?.[1] ?? "";
     expect(alert).toMatch(/report failed/);
     expect(alert).not.toContain("pw@");
+  });
+
+  it("sends one report even when two triggers fire (Vercel Cron + a backup cron), unless forced", async () => {
+    const sendSpy = vi.spyOn(slackSend, "postToSlack").mockResolvedValue();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const secret = (n: string) =>
+      n === "x-fluxometer-secret" ? "test-secret" : undefined;
+
+    const first = await handleReportRequest({ header: secret });
+    resetDuplicateGuardForTesting(); // a different serverless instance
+    const second = await handleReportRequest({ header: secret });
+    resetDuplicateGuardForTesting();
+    const forced = await handleReportRequest({
+      header: (n) => (n === "x-fluxometer-force" ? "1" : secret(n)),
+    });
+
+    expect(first).toEqual({ status: 200, body: "ok" });
+    expect(second).toEqual({ status: 200, body: "already sent" });
+    expect(forced).toEqual({ status: 200, body: "ok" });
+    expect(sendSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets only one of two simultaneous triggers run the report", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sendSpy = vi
+      .spyOn(slackSend, "postToSlack")
+      .mockImplementation(() => gate);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const req = {
+      header: (n: string) =>
+        n === "x-fluxometer-secret" ? "test-secret" : undefined,
+    };
+
+    const firstRun = handleReportRequest(req);
+    await new Promise((r) => setTimeout(r, 150));
+    resetDuplicateGuardForTesting();
+    const secondRun = await handleReportRequest(req);
+    release();
+
+    expect(secondRun).toEqual({ status: 200, body: "already running" });
+    expect(await firstRun).toEqual({ status: 200, body: "ok" });
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the app in the Slack header when FLUXOMETER_APP_NAME is set", async () => {
+    process.env.FLUXOMETER_APP_NAME = "Fluxo Casa";
+    process.env.FLUXOMETER_LOCALE = "pt";
+    const sendSpy = vi.spyOn(slackSend, "postToSlack").mockResolvedValue();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await handleReportRequest({
+        header: (n) => (n === "x-fluxometer-secret" ? "test-secret" : undefined),
+      });
+    } finally {
+      delete process.env.FLUXOMETER_APP_NAME;
+      delete process.env.FLUXOMETER_LOCALE;
+    }
+    expect(sendSpy.mock.calls[0][1]).toMatch(/^:bar_chart: \*fluxometer · Fluxo Casa\* — Performance nas últimas 24h/);
   });
 });
