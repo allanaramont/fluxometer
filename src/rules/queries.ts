@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 
 import { SCHEMA_NAME } from "../core/schema.js";
+import { reportTimeZone } from "./format.js";
 
 export type RuleId =
   | "slow_route"
@@ -153,27 +154,104 @@ function worstBucketPerRoute(
   return [...worstByRoute.values()];
 }
 
-/** `pg_stat_statements` is cluster-wide and can contain DDL the app ran
- * itself — including this very package's own `create/alter role ...
- * password '<literal>'` during `init`/`rotate`. Scoped to the current
- * database and filtered to never surface anything that looks like it
- * carries a password, so that text never reaches the Slack report. */
+/** A query has to have run at least this many times to count. One-off
+ * statements — migrations, backups (`COPY`), a dashboard someone opened
+ * once — are not the app's hot path, and fixing them changes nothing. */
+const SLOW_QUERY_MIN_CALLS = 20;
+const SLOW_QUERY_MIN_MEAN_MS = 200;
+const SLOW_QUERY_MAX_RESULTS = 5;
+
+/** Statements that are never the app's own data access: DDL, maintenance,
+ * session and transaction control. Matched on the first keyword after any
+ * leading comments. */
+const UTILITY_STATEMENT =
+  /^(create|alter|drop|comment|grant|revoke|truncate|copy|vacuum|analyze|reindex|cluster|refresh|do|call|set|reset|show|begin|start|commit|rollback|end|abort|savepoint|release|listen|unlisten|notify|lock|prepare|deallocate|discard|explain|checkpoint|load|security|import)\b/i;
+
+/** Catalog introspection (dashboards, ORMs, `psql \d`), migration
+ * bookkeeping, fluxometer's own queries, and the internal schemas managed
+ * platforms like Supabase run their own services from (auth, storage,
+ * realtime, cron…). None of these are the app's queries. */
+const NOT_APP_QUERY =
+  /"?\b(pg_catalog|information_schema|pg_[a-z_]+|_prisma_migrations|supabase_migrations|schema_migrations|fluxometer|auth|storage|realtime|_realtime|vault|cron|net|extensions|graphql|graphql_public|supabase_functions|pgsodium|pgbouncer)"?\s*\./i;
+const CATALOG_RELATION =
+  /\b(pg_catalog|information_schema|pg_class|pg_namespace|pg_attribute|pg_type|pg_proc|pg_extension|pg_available_extensions|pg_index|pg_constraint|pg_depend|pg_description|pg_settings|pg_roles|pg_database|pg_policies|pg_trigger|pg_stat_[a-z_]+|pg_tables|pg_views|pg_matviews|pg_indexes|pg_sequences|pg_locks)\b/i;
+
+/** Roles managed platforms run their own services as. */
+const PLATFORM_ROLES = [
+  "supabase_admin",
+  "supabase_auth_admin",
+  "supabase_storage_admin",
+  "supabase_realtime_admin",
+  "supabase_replication_admin",
+  "supabase_read_only_user",
+  "authenticator",
+  "pgbouncer",
+  "dashboard_user",
+  "rdsadmin",
+  "cloudsqladmin",
+  "azure_superuser",
+];
+
+/** Leading `-- comments` and `/* comments *\/` dropped, whitespace
+ * collapsed, so both the filters and the report see the statement itself. */
+export function normalizeQueryText(query: string): string {
+  return query
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/--[^\n]*(\n|$)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function isAppQuery(normalized: string): boolean {
+  if (!normalized) return false;
+  if (UTILITY_STATEMENT.test(normalized)) return false;
+  if (NOT_APP_QUERY.test(normalized)) return false;
+  if (CATALOG_RELATION.test(normalized)) return false;
+  return true;
+}
+
+function querySubject(normalized: string): string {
+  return normalized.length > 100
+    ? `${normalized.slice(0, 100).trimEnd()}…`
+    : normalized;
+}
+
+/** `pg_stat_statements` is cluster-wide and holds everything that ever ran
+ * — migrations, backups, dashboard introspection, the platform's own
+ * services, and this package's own `create/alter role ... password
+ * '<literal>'` during `init`/`rotate`. Only the app's repeated data
+ * access is reported: current database, not a platform role, run at
+ * least 20 times, and not a utility/catalog statement. Anything that
+ * looks like it carries a password never leaves the database. */
 export async function slowQuery(pool: Pool): Promise<RuleResult[]> {
   const { rows } = await pool.query(
     `select query, mean_exec_time, calls
      from pg_stat_statements
      where dbid = (select oid from pg_database where datname = current_database())
-       and mean_exec_time > 200
+       and userid not in (select oid from pg_roles where rolname = any($1))
+       and mean_exec_time > $2
+       and calls >= $3
        and query not ilike '%password%'
      order by mean_exec_time desc
-     limit 5`,
+     limit 100`,
+    [PLATFORM_ROLES, SLOW_QUERY_MIN_MEAN_MS, SLOW_QUERY_MIN_CALLS],
   );
-  return rows.map((row) => ({
-    ruleId: "slow_query" as const,
-    severity: "medium" as const,
-    subject: String(row.query).slice(0, 80),
-    metrics: { meanExecMs: num(row.mean_exec_time), calls: num(row.calls) },
-  }));
+  const results: RuleResult[] = [];
+  for (const row of rows) {
+    const normalized = normalizeQueryText(String(row.query));
+    if (!isAppQuery(normalized)) continue;
+    results.push({
+      ruleId: "slow_query" as const,
+      severity: "medium" as const,
+      subject: querySubject(normalized),
+      metrics: {
+        meanExecMs: Math.round(num(row.mean_exec_time)),
+        calls: num(row.calls),
+      },
+    });
+    if (results.length === SLOW_QUERY_MAX_RESULTS) break;
+  }
+  return results;
 }
 
 const HIGH_VARIANCE_MULTIPLIER = 3;
@@ -333,15 +411,19 @@ export async function aiFailureRate(pool: Pool): Promise<RuleResult[]> {
 
 const PEAK_HOUR_MULTIPLIER = 2;
 
+/** Hours of the day are bucketed in FLUXOMETER_TIMEZONE (UTC if unset),
+ * so "around 17:00" means 17:00 where the team actually is. */
 export async function peakHourBottleneck(pool: Pool): Promise<RuleResult[]> {
+  const timeZone = reportTimeZone();
   const { rows } = await pool.query(
-    `select route, extract(hour from created_at)::int as hour_of_day,
+    `select route, extract(hour from created_at at time zone $1)::int as hour_of_day,
         percentile_cont(0.95) within group (order by duration_ms) as p95,
         count(*) as reqs
      from ${SCHEMA_NAME}.request_metrics
      where created_at > now() - interval '7 days'
      group by route, hour_of_day
      having count(*) >= 20`,
+    [timeZone],
   );
 
   const byRoute = new Map<
@@ -371,8 +453,9 @@ export async function peakHourBottleneck(pool: Pool): Promise<RuleResult[]> {
           subject: route,
           metrics: {
             hourOfDay: bucket.hour,
-            p95: bucket.p95,
-            avgP95: avgP95,
+            timeZone,
+            p95: Math.round(bucket.p95),
+            avgP95: Math.round(avgP95),
             reqs: bucket.reqs,
           },
         });
