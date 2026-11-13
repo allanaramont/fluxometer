@@ -62,7 +62,7 @@ export async function regression(pool: Pool): Promise<RuleResult[]> {
         select route, percentile_cont(0.95) within group (order by duration_ms) as p95
         from ${SCHEMA_NAME}.request_metrics
         where created_at between now() - interval '8 days' and now() - interval '7 days'
-        group by route
+        group by route having count(*) >= 20
      )
      select a.route, a.p95 as p95_now, b.p95 as p95_before, a.reqs
      from atual a join anterior b using (route)
@@ -483,7 +483,7 @@ export async function postDeployRegression(pool: Pool): Promise<RuleResult[]> {
         select route, percentile_cont(0.95) within group (order by duration_ms) as p95
         from ${SCHEMA_NAME}.request_metrics
         where created_at between $1::timestamptz - interval '2 hours' and $1::timestamptz
-        group by route
+        group by route having count(*) >= 20
      )
      select d.route, d.p95 as p95_after, a.p95 as p95_before, d.reqs
      from depois d join antes a using (route)

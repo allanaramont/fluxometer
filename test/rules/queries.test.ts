@@ -8,6 +8,8 @@ import {
   normalizeQueryText,
   peakHourBottleneck,
   platformErrorConcentration,
+  postDeployRegression,
+  regression,
   slowQuery,
   timeoutSpike,
   topConsumer,
@@ -18,18 +20,23 @@ const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
 async function seed(
   route: string,
   count: number,
-  opts: { status?: number; platform?: string; createdAt?: string } = {},
+  opts: {
+    status?: number;
+    platform?: string;
+    createdAt?: string;
+    durationMs?: number;
+  } = {},
 ): Promise<void> {
   const status = opts.status ?? 200;
   const platform = opts.platform ?? null;
   const createdAt = opts.createdAt ?? "now()";
-  for (let i = 0; i < count; i++) {
-    await pool.query(
-      `insert into ${SCHEMA_NAME}.request_metrics (route, method, status, duration_ms, platform, created_at)
-       values ($1, 'GET', $2, 10, $3, ${createdAt})`,
-      [route, status, platform],
-    );
-  }
+  const durationMs = opts.durationMs ?? 10;
+  await pool.query(
+    `insert into ${SCHEMA_NAME}.request_metrics (route, method, status, duration_ms, platform, created_at)
+     select $1, 'GET', $2, $3, $4, ${createdAt}
+     from generate_series(1, $5)`,
+    [route, status, durationMs, platform, count],
+  );
 }
 
 beforeEach(async () => {
@@ -148,16 +155,58 @@ describe("slowQuery", () => {
 describe("slowQuery filtering (what the report showed on a real Supabase project)", () => {
   const rows = [
     // Real noise from production pg_stat_statements:
-    { query: "-- postgres-migrations disable-transaction\n-- Create index for case-insensitive search\ncreate index concurrently if not exists x on t (lower(name))", mean_exec_time: 618.56, calls: 40 },
-    { query: 'COPY public."Event" (id, "familyId", title) TO stdout', mean_exec_time: 494.5, calls: 30 },
-    { query: "with page as (select c.oid, c.relname, c.reltuples from pg_class c join pg_namespace n on n.oid = c.relnamespace) select * from page", mean_exec_time: 415.3, calls: 300 },
-    { query: "-- Partial unique index scoped to AI_UPGRADE_REQUEST only.\nCREATE UNIQUE INDEX ...", mean_exec_time: 403.9, calls: 25 },
-    { query: "SELECT e.name, n.nspname AS schema, e.default_version, x.extversion FROM pg_available_extensions e", mean_exec_time: 394.6, calls: 80 },
-    { query: 'select * from "auth"."users" where id = $1', mean_exec_time: 300, calls: 900 },
-    { query: "select count(*) from fluxometer.request_metrics where created_at > now() - interval '24 hours'", mean_exec_time: 250, calls: 60 },
+    {
+      query:
+        "-- postgres-migrations disable-transaction\n-- Create index for case-insensitive search\ncreate index concurrently if not exists x on t (lower(name))",
+      mean_exec_time: 618.56,
+      calls: 40,
+    },
+    {
+      query: 'COPY public."Event" (id, "familyId", title) TO stdout',
+      mean_exec_time: 494.5,
+      calls: 30,
+    },
+    {
+      query:
+        "with page as (select c.oid, c.relname, c.reltuples from pg_class c join pg_namespace n on n.oid = c.relnamespace) select * from page",
+      mean_exec_time: 415.3,
+      calls: 300,
+    },
+    {
+      query:
+        "-- Partial unique index scoped to AI_UPGRADE_REQUEST only.\nCREATE UNIQUE INDEX ...",
+      mean_exec_time: 403.9,
+      calls: 25,
+    },
+    {
+      query:
+        "SELECT e.name, n.nspname AS schema, e.default_version, x.extversion FROM pg_available_extensions e",
+      mean_exec_time: 394.6,
+      calls: 80,
+    },
+    {
+      query: 'select * from "auth"."users" where id = $1',
+      mean_exec_time: 300,
+      calls: 900,
+    },
+    {
+      query:
+        "select count(*) from fluxometer.request_metrics where created_at > now() - interval '24 hours'",
+      mean_exec_time: 250,
+      calls: 60,
+    },
     // The app's own repeated queries — these should be reported:
-    { query: 'SELECT "public"."Task"."id", "public"."Task"."title" FROM "public"."Task" WHERE "public"."Task"."familyId" = $1 ORDER BY "public"."Task"."dueDate" ASC', mean_exec_time: 380.123456, calls: 1200 },
-    { query: "/* prisma */ select * from \"Event\" where \"familyId\" = $1", mean_exec_time: 220.9, calls: 55 },
+    {
+      query:
+        'SELECT "public"."Task"."id", "public"."Task"."title" FROM "public"."Task" WHERE "public"."Task"."familyId" = $1 ORDER BY "public"."Task"."dueDate" ASC',
+      mean_exec_time: 380.123456,
+      calls: 1200,
+    },
+    {
+      query: '/* prisma */ select * from "Event" where "familyId" = $1',
+      mean_exec_time: 220.9,
+      calls: 55,
+    },
   ];
 
   it("keeps only the app's own data access and drops migrations, backups, dashboards and platform schemas", async () => {
@@ -170,7 +219,9 @@ describe("slowQuery filtering (what the report showed on a real Supabase project
     expect(results.map((r) => r.metrics.meanExecMs)).toEqual([380, 221]);
     expect(results[0].subject).toMatch(/^SELECT "public"."Task"/);
     expect(results[0].subject.length).toBeLessThanOrEqual(101);
-    expect(results[1].subject).toBe('select * from "Event" where "familyId" = $1');
+    expect(results[1].subject).toBe(
+      'select * from "Event" where "familyId" = $1',
+    );
     const sql = String(querySpy.mock.calls[0]?.[0]);
     expect(sql).toMatch(/calls >= \$3/);
     expect(sql).toMatch(/rolname = any\(\$1\)/);
@@ -233,5 +284,94 @@ describe("peakHourBottleneck", () => {
     await seedAtUtcHour(20, 1160, 25);
     await seedAtUtcHour(10, 100, 25);
     await expect(peakHourBottleneck(pool)).resolves.toBeInstanceOf(Array);
+  });
+});
+
+describe("regression", () => {
+  it("ignores a last-week baseline with too few samples, instead of treating one lucky request as normal", async () => {
+    // "anterior" window (8-7 days ago): a single fast sample — not a real baseline.
+    await seed("/mcp/", 1, {
+      durationMs: 20,
+      createdAt: "now() - interval '7 days 12 hours'",
+    });
+    // "atual" window (last 24h): well sampled, genuinely unremarkable latency.
+    await seed("/mcp/", 25, {
+      durationMs: 50,
+      createdAt: "now() - interval '1 hour'",
+    });
+
+    await expect(regression(pool)).resolves.toEqual([]);
+  });
+
+  it("still flags a genuine regression when both windows have real volume", async () => {
+    await seed("/mcp/", 25, {
+      durationMs: 50,
+      createdAt: "now() - interval '7 days 12 hours'",
+    });
+    await seed("/mcp/", 25, {
+      durationMs: 100,
+      createdAt: "now() - interval '1 hour'",
+    });
+
+    const results = await regression(pool);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      ruleId: "regression",
+      subject: "/mcp/",
+    });
+  });
+});
+
+describe("postDeployRegression", () => {
+  beforeEach(async () => {
+    // `order by created_at desc limit 1` picks whatever marker is newest —
+    // a stray one left by another test file (e.g. a real deploy marker
+    // from the cron route tests) would otherwise outrank the deliberately
+    // "1 hour ago" marker these tests seed.
+    await pool.query(`delete from ${SCHEMA_NAME}.deploy_markers`);
+  });
+
+  async function seedDeployMarker(createdAtExpr: string): Promise<void> {
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.deploy_markers (deploy_id, created_at)
+       values ('test-deploy', ${createdAtExpr})`,
+    );
+  }
+
+  it("ignores a pre-deploy baseline with too few samples, instead of treating one lucky request as normal", async () => {
+    await seedDeployMarker("now() - interval '1 hour'");
+    // "antes" window (2h before the marker): a single fast sample.
+    await seed("/mcp/", 1, {
+      durationMs: 20,
+      createdAt: "now() - interval '1 hour 30 minutes'",
+    });
+    // "depois" window (marker to +2h): well sampled, genuinely unremarkable latency.
+    await seed("/mcp/", 25, {
+      durationMs: 50,
+      createdAt: "now() - interval '30 minutes'",
+    });
+
+    await expect(postDeployRegression(pool)).resolves.toEqual([]);
+  });
+
+  it("still flags a genuine post-deploy regression when both windows have real volume", async () => {
+    await seedDeployMarker("now() - interval '1 hour'");
+    await seed("/mcp/", 25, {
+      durationMs: 50,
+      createdAt: "now() - interval '1 hour 30 minutes'",
+    });
+    await seed("/mcp/", 25, {
+      durationMs: 100,
+      createdAt: "now() - interval '30 minutes'",
+    });
+
+    const results = await postDeployRegression(pool);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      ruleId: "post_deploy_regression",
+      subject: "/mcp/",
+    });
   });
 });
