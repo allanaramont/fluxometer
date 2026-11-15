@@ -55,6 +55,26 @@ describe("trackFailure rate limit", () => {
     ]);
   });
 
+  it("does not let the overflow bucket hide new kinds once the tracker is full", async () => {
+    process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE = "1";
+    process.env.FLUXOMETER_FAILURES_PER_MINUTE = "100000";
+    // fill the tracker with 500 distinct kinds, one row each (the per-key cap)
+    for (let i = 0; i < 500; i++) {
+      trackFailure({ route: `/r${i}`, method: "GET", status: 500 });
+    }
+    // 20 more kinds, all beyond the tracked set: they share the overflow
+    // bucket, which must not be held to the per-key cap of 1
+    for (let i = 0; i < 20; i++) {
+      trackFailure({ route: `/late${i}`, method: "GET", status: 500 });
+    }
+    await flushForTesting();
+    delete process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE;
+    const { rows } = await pool.query(
+      `select count(*)::int as n from ${SCHEMA_NAME}.request_failures where route like '/late%'`,
+    );
+    expect(rows[0].n).toBe(20);
+  });
+
   it("logs what it dropped, with the noisiest kinds, when the window rolls over", async () => {
     process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE = "1";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

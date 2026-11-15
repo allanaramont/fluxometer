@@ -187,9 +187,20 @@ function admitFailure(input: FailureEvent, now: number = Date.now()): boolean {
   }
   const entry = failureKeyCounts.get(key) ?? { admitted: 0, dropped: 0 };
   failureKeyCounts.set(key, entry);
+  // The overflow bucket stands for MANY unrelated kinds of failure: holding it
+  // to the per-key cap would let the first few hide every new kind once the
+  // tracker is full. It is limited by the global backstop only.
+  const overPerKey =
+    key !== OVERFLOW_KEY &&
+    entry.admitted >=
+      envInt(
+        "FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE",
+        DEFAULT_PER_KEY_PER_MINUTE,
+      );
   if (
-    entry.admitted >= envInt("FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE", DEFAULT_PER_KEY_PER_MINUTE) ||
-    failuresInWindow >= envInt("FLUXOMETER_FAILURES_PER_MINUTE", DEFAULT_FAILURES_PER_MINUTE)
+    overPerKey ||
+    failuresInWindow >=
+      envInt("FLUXOMETER_FAILURES_PER_MINUTE", DEFAULT_FAILURES_PER_MINUTE)
   ) {
     entry.dropped += 1;
     return false;
