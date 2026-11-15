@@ -72,54 +72,102 @@ function createInsertBatcher(options: {
   columns: string[];
   failureMessage: string;
 }) {
-  let rows: unknown[][] = [];
+  const rows: unknown[][] = [];
   let scheduled = false;
+  let flushing = false;
+  // Rows handed to a query that has not settled yet: they still occupy memory,
+  // so the cap counts them too (a slow database must not let the buffer grow by
+  // one full batch per tick).
+  let inFlight = 0;
   let dropped = 0;
 
-  async function flush(): Promise<void> {
-    scheduled = false;
-    const batch = rows;
-    rows = [];
-    if (dropped > 0) {
-      console.warn(
-        `fluxometer: dropped ${dropped} ${options.table} row(s): more than ${MAX_BUFFERED_ROWS} were waiting to be written.`,
-      );
-      dropped = 0;
+  function insert(chunk: unknown[][]): Promise<unknown> {
+    const width = options.columns.length;
+    const placeholders = chunk
+      .map(
+        (_, row) =>
+          `(${options.columns.map((__, col) => `$${row * width + col + 1}`).join(", ")})`,
+      )
+      .join(", ");
+    return getPool().query(
+      `insert into ${SCHEMA_NAME}.${options.table} (${options.columns.join(", ")}) values ${placeholders}`,
+      chunk.flat(),
+    );
+  }
+
+  // Postgres data (22xxx) and constraint (23xxx) errors are about ONE row:
+  // retry the chunk row by row so a single bad row cannot take down the rest.
+  // Anything else (connection down...) would fail every row again: give up.
+  function isRowLevelError(err: unknown): boolean {
+    const code = (err as { code?: unknown } | undefined)?.code;
+    return typeof code === "string" && /^(22|23)/.test(code);
+  }
+
+  async function writeChunk(chunk: unknown[][]): Promise<void> {
+    try {
+      await insert(chunk);
+      return;
+    } catch (err) {
+      logOnce(options.failureMessage, err);
+      if (chunk.length === 1 || !isRowLevelError(err)) return;
     }
-    for (let i = 0; i < batch.length; i += MAX_ROWS_PER_INSERT) {
-      const chunk = batch.slice(i, i + MAX_ROWS_PER_INSERT);
-      const width = options.columns.length;
-      const placeholders = chunk
-        .map(
-          (_, row) =>
-            `(${options.columns.map((__, col) => `$${row * width + col + 1}`).join(", ")})`,
-        )
-        .join(", ");
+    for (const row of chunk) {
       try {
-        await getPool().query(
-          `insert into ${SCHEMA_NAME}.${options.table} (${options.columns.join(", ")}) values ${placeholders}`,
-          chunk.flat(),
-        );
+        await insert([row]);
       } catch (err) {
         logOnce(options.failureMessage, err);
       }
     }
   }
 
+  function reportDropped(): void {
+    if (dropped === 0) return;
+    console.warn(
+      `fluxometer: dropped ${dropped} ${options.table} row(s): more than ${MAX_BUFFERED_ROWS} were waiting to be written.`,
+    );
+    dropped = 0;
+  }
+
+  // One flush at a time, draining everything that arrives meanwhile.
+  async function run(): Promise<void> {
+    scheduled = false;
+    flushing = true;
+    try {
+      reportDropped();
+      while (rows.length > 0) {
+        const chunk = rows.splice(0, MAX_ROWS_PER_INSERT);
+        inFlight = chunk.length;
+        try {
+          await writeChunk(chunk);
+        } finally {
+          inFlight = 0;
+        }
+      }
+    } finally {
+      flushing = false;
+      reportDropped();
+      if (rows.length > 0) schedule();
+    }
+  }
+
+  function schedule(): void {
+    if (scheduled || flushing) return;
+    scheduled = true;
+    trackPending(
+      new Promise<void>((resolve) => {
+        setImmediate(() => void run().finally(resolve));
+      }),
+    );
+  }
+
   return {
     add(row: unknown[]): void {
-      if (rows.length >= MAX_BUFFERED_ROWS) {
+      if (rows.length + inFlight >= MAX_BUFFERED_ROWS) {
         dropped += 1;
         return;
       }
       rows.push(row);
-      if (scheduled) return;
-      scheduled = true;
-      trackPending(
-        new Promise<void>((resolve) => {
-          setImmediate(() => void flush().finally(resolve));
-        }),
-      );
+      schedule();
     },
   };
 }
@@ -173,12 +221,20 @@ export function trackRequest(input: RequestMetric): void {
 }
 
 export function trackClientMetric(input: ClientMetric): void {
+  // Every row is normalized BEFORE it is buffered: a value Postgres would
+  // reject (NaN, a NUL byte, a number beyond int4) must not be able to fail the
+  // multi-row INSERT it shares with other rows. screen/action are NOT NULL, so
+  // a metric without them is not storable.
+  const durationMs = clampInt4(input.durationMs);
+  const screen = cleanLabel(input.screen, 128);
+  const action = cleanLabel(input.action, 128);
+  if (durationMs === null || !screen || !action) return;
   clientMetricBatcher.add([
-    input.screen,
-    input.action,
-    Math.round(input.durationMs),
-    input.appVersion ?? null,
-    input.platform ?? null,
+    screen,
+    action,
+    durationMs,
+    cleanLabel(input.appVersion, 32) ?? null,
+    cleanLabel(input.platform, 32) ?? null,
   ]);
 }
 
