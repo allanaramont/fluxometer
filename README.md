@@ -212,7 +212,10 @@ import { expressMiddleware, setFailureCause } from "fluxometer/express";
 app.use(
   expressMiddleware({
     failures: {
-      tenant: (req) => req.params.familyId, // who it happened to (optional)
+      // who it happened to (optional). Read the route params from `info`:
+      // Express restores `req.params` when an error leaves a router, so on a
+      // failed response `req.params` is usually empty by the time we run.
+      tenant: (req, info) => info.params.familyId,
       correlationId: (req) => req.get("x-correlation-id"), // optional
     },
   }),
@@ -224,6 +227,14 @@ app.use((err, req, res, next) => {
   res.status(err.status ?? 500).json({ error: "..." });
 });
 ```
+
+The route label (`/api/families/:familyId/agenda`) is the same whether the
+response is sent by the handler or by an error handler further up: Express
+restores `req.baseUrl` when an error leaves a router, which used to drop the
+mount prefix from failed responses only (`/:familyId/agenda`), splitting one
+route into two in `request_metrics`. The label is now rebuilt from the URL
+when that happens (plain `/a/:param/b` patterns; regex and wildcard routes keep
+what Express reports).
 
 Privacy, because this runs in every app that installs fluxometer:
 
@@ -258,6 +269,11 @@ track.audit({
   tags: ["pets-list"],
 });
 ```
+
+Events (and `track.clientMetric` rows) added in the same tick are written as
+one multi-row INSERT, because the dedicated pool has only 2 connections. At most
+5000 rows wait to be written; beyond that they are dropped and the count is
+logged, so a loop of writes can never grow the host's memory.
 
 There is **nowhere to put a value**: `fields` takes names only, and every
 field is bounded (50 names, 64 characters each). Hook it where your app

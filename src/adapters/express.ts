@@ -8,18 +8,82 @@ import { trackFailure, trackRequest } from "../core/writer.js";
  * as the metric's route label. */
 const UNMATCHED_ROUTE = "<unmatched>";
 
-/** `req.route.path` is relative to whatever router the route was
- * registered on — two versioned routers mounted at different prefixes
- * (`app.use('/api/v1', r1)` / `app.use('/api/v2', r2)`) both exposing
- * `/users/:id` would otherwise collapse into the same metric. `baseUrl`
- * carries the mount prefix. `path` can also be a RegExp or an array for
- * `app.get(/re/)` / `app.get(['/a', '/b'])`, so it's coerced to a string
- * rather than assumed to already be one. */
-function routeLabel(req: Request): string {
+/** What the middleware knows about the matched route once the response is
+ * done: the label to record and the route params (for host callbacks). */
+export type RouteInfo = {
+  route: string;
+  params: Record<string, string>;
+};
+
+// Only plain `/a/:param/b` patterns can be rebuilt from the URL; regexes,
+// wildcards and optional parts keep the label Express reports.
+const PLAIN_PATTERN = /^[\w/:.-]*$/;
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * The route label (`/api/families/:familyId/agenda`) and its params.
+ *
+ * `req.route.path` is relative to whatever router the route was registered on,
+ * so the mount prefix comes from `req.baseUrl` (two versioned routers mounted
+ * at `/api/v1` and `/api/v2` both exposing `/users/:id` must not collapse).
+ * `path` can also be a RegExp or an array for `app.get(/re/)` /
+ * `app.get(['/a', '/b'])`, so it is coerced to a string.
+ *
+ * BUT Express restores `req.baseUrl` and `req.params` to the parent's values
+ * when an error leaves a router, and an app-level error handler (the usual
+ * setup) answers with both gone: the label lost its prefix (`/:familyId/agenda`)
+ * and the params were empty, only for failed responses. When the label from
+ * `baseUrl` no longer matches the URL actually requested, it is rebuilt from
+ * the URL: the mount prefix is the part of the URL before the route's own
+ * segments (mount paths are literal), and the params are read from the
+ * segments that line up with the `:name` ones.
+ */
+function routeInfo(req: Request): RouteInfo | undefined {
   const path = req.route?.path as unknown;
-  if (path === undefined) return UNMATCHED_ROUTE;
+  if (path === undefined) return undefined;
   const pathStr = Array.isArray(path) ? path.join(",") : String(path);
-  return `${req.baseUrl ?? ""}${pathStr}`;
+  const direct = `${req.baseUrl ?? ""}${pathStr}`;
+  const reqParams = (req.params ?? {}) as Record<string, string>;
+
+  const urlPath = String(req.originalUrl ?? req.url ?? "").split("?", 1)[0] ?? "";
+  const urlSegments = urlPath.split("/").filter(Boolean);
+  const directSegments = direct.split("/").filter(Boolean);
+
+  if (typeof path !== "string" || !PLAIN_PATTERN.test(path)) {
+    return { route: direct, params: { ...reqParams } };
+  }
+  const patternSegments = path.split("/").filter(Boolean);
+  if (patternSegments.length > urlSegments.length) {
+    return { route: direct, params: { ...reqParams } };
+  }
+
+  // The params can be read off the URL whatever happened to req.params (an
+  // error handler inside the router sees an empty one, too).
+  const tail = urlSegments.slice(urlSegments.length - patternSegments.length);
+  const derived: Record<string, string> = {};
+  patternSegments.forEach((segment, index) => {
+    if (segment.startsWith(":")) {
+      derived[segment.slice(1)] = safeDecode(tail[index] ?? "");
+    }
+  });
+  const params = { ...derived, ...reqParams };
+
+  // baseUrl still lines up with the URL: keep the label Express built.
+  if (directSegments.length === urlSegments.length) {
+    return { route: direct, params };
+  }
+  const prefix = urlSegments.slice(0, urlSegments.length - patternSegments.length);
+  return {
+    route: `${prefix.length > 0 ? `/${prefix.join("/")}` : ""}${path}`,
+    params,
+  };
 }
 
 /** The cause of a failed response, handed over by the app's error handler. */
@@ -51,8 +115,10 @@ export type ExpressMiddlewareOptions = {
     | false
     | {
         captureMessage?: boolean;
-        correlationId?: (req: Request) => string | undefined;
-        tenant?: (req: Request) => string | undefined;
+        /** `info.params` has the route params even when Express already
+         * restored `req.params` (an error that left its router). */
+        correlationId?: (req: Request, info: RouteInfo) => string | undefined;
+        tenant?: (req: Request, info: RouteInfo) => string | undefined;
       };
 };
 
@@ -76,7 +142,8 @@ export function expressMiddleware(opts?: ExpressMiddlewareOptions) {
     const startedAt = process.hrtime.bigint();
     res.on("finish", () => {
       const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-      const route = routeLabel(req);
+      const info = routeInfo(req);
+      const route = info?.route ?? UNMATCHED_ROUTE;
       trackRequest({
         route,
         method: req.method,
@@ -86,7 +153,7 @@ export function expressMiddleware(opts?: ExpressMiddlewareOptions) {
       });
       // Unmatched routes are scanner noise, and their raw path can carry
       // tokens: never recorded as failures (same rule as the metric label).
-      if (failureOpts && res.statusCode >= 400 && route !== UNMATCHED_ROUTE) {
+      if (failureOpts && info && res.statusCode >= 400) {
         const cause = ((res.locals ?? {}) as Record<string, unknown>)[
           CAUSE_KEY
         ] as FailureCause | undefined;
@@ -98,8 +165,8 @@ export function expressMiddleware(opts?: ExpressMiddlewareOptions) {
           errorName: cleanLabel(cause?.name),
           errorCode: cleanLabel(cause?.code),
           message: failureOpts.captureMessage ? cause?.message : undefined,
-          correlationId: safe(() => failureOpts.correlationId?.(req)),
-          tenant: safe(() => failureOpts.tenant?.(req)),
+          correlationId: safe(() => failureOpts.correlationId?.(req, info)),
+          tenant: safe(() => failureOpts.tenant?.(req, info)),
           platform: opts?.platform,
         });
       }

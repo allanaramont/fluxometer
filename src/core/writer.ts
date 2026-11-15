@@ -57,6 +57,99 @@ function markDeployOnce(): void {
   trackPending(promise);
 }
 
+// Audit events and client metrics are written in bursts (a cron looping writes;
+// an app sending batches of timings) and the dedicated pool has only 2
+// connections, so one INSERT per row would queue without limit. Rows added in
+// the same tick are written together as one multi-row INSERT. The buffer is
+// bounded: past the cap rows are dropped and the count is logged, because losing
+// a few trail rows is better than growing the host's memory or starving the
+// request metrics that share those 2 connections.
+const MAX_ROWS_PER_INSERT = 200;
+const MAX_BUFFERED_ROWS = 5000;
+
+function createInsertBatcher(options: {
+  table: string;
+  columns: string[];
+  failureMessage: string;
+}) {
+  let rows: unknown[][] = [];
+  let scheduled = false;
+  let dropped = 0;
+
+  async function flush(): Promise<void> {
+    scheduled = false;
+    const batch = rows;
+    rows = [];
+    if (dropped > 0) {
+      console.warn(
+        `fluxometer: dropped ${dropped} ${options.table} row(s): more than ${MAX_BUFFERED_ROWS} were waiting to be written.`,
+      );
+      dropped = 0;
+    }
+    for (let i = 0; i < batch.length; i += MAX_ROWS_PER_INSERT) {
+      const chunk = batch.slice(i, i + MAX_ROWS_PER_INSERT);
+      const width = options.columns.length;
+      const placeholders = chunk
+        .map(
+          (_, row) =>
+            `(${options.columns.map((__, col) => `$${row * width + col + 1}`).join(", ")})`,
+        )
+        .join(", ");
+      try {
+        await getPool().query(
+          `insert into ${SCHEMA_NAME}.${options.table} (${options.columns.join(", ")}) values ${placeholders}`,
+          chunk.flat(),
+        );
+      } catch (err) {
+        logOnce(options.failureMessage, err);
+      }
+    }
+  }
+
+  return {
+    add(row: unknown[]): void {
+      if (rows.length >= MAX_BUFFERED_ROWS) {
+        dropped += 1;
+        return;
+      }
+      rows.push(row);
+      if (scheduled) return;
+      scheduled = true;
+      trackPending(
+        new Promise<void>((resolve) => {
+          setImmediate(() => void flush().finally(resolve));
+        }),
+      );
+    },
+  };
+}
+
+const clientMetricBatcher = createInsertBatcher({
+  table: "client_metrics",
+  columns: ["screen", "action", "duration_ms", "app_version", "platform"],
+  failureMessage: "failed to write client metric",
+});
+
+const auditBatcher = createInsertBatcher({
+  table: "audit_events",
+  columns: [
+    "entity",
+    "action",
+    "target_id",
+    "affected_count",
+    "tenant",
+    "actor",
+    "source",
+    "route",
+    "method",
+    "correlation_id",
+    "fields",
+    "effect",
+    "tags",
+  ],
+  failureMessage: "failed to write audit event",
+});
+
 export function trackRequest(input: RequestMetric): void {
   markDeployOnce();
   const watchdog = maybeRunStaleReportWatchdog();
@@ -80,21 +173,13 @@ export function trackRequest(input: RequestMetric): void {
 }
 
 export function trackClientMetric(input: ClientMetric): void {
-  const promise = getPool()
-    .query(
-      `insert into ${SCHEMA_NAME}.client_metrics
-        (screen, action, duration_ms, app_version, platform)
-       values ($1, $2, $3, $4, $5)`,
-      [
-        input.screen,
-        input.action,
-        Math.round(input.durationMs),
-        input.appVersion ?? null,
-        input.platform ?? null,
-      ],
-    )
-    .catch((err) => logOnce("failed to write client metric", err));
-  trackPending(promise);
+  clientMetricBatcher.add([
+    input.screen,
+    input.action,
+    Math.round(input.durationMs),
+    input.appVersion ?? null,
+    input.platform ?? null,
+  ]);
 }
 
 export function trackAiCall(input: AiCallMetric): void {
@@ -242,30 +327,21 @@ export function trackFailure(input: FailureEvent): void {
 
 /** "Something changed". Field NAMES only: there is no place for a value. */
 export function trackAudit(input: AuditEvent): void {
-  const promise = getPool()
-    .query(
-      `insert into ${SCHEMA_NAME}.audit_events
-        (entity, action, target_id, affected_count, tenant, actor, source,
-         route, method, correlation_id, fields, effect, tags)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [
-        cleanLabel(input.entity) ?? "unknown",
-        cleanLabel(input.action) ?? "unknown",
-        cleanLabel(input.targetId, MAX_ID_LENGTH) ?? null,
-        clampInt4(input.affectedCount),
-        cleanLabel(input.tenant, MAX_ID_LENGTH) ?? null,
-        cleanLabel(input.actor, MAX_ID_LENGTH) ?? null,
-        cleanLabel(input.source) ?? null,
-        cleanLabel(input.route, MAX_ID_LENGTH) ?? null,
-        cleanLabel(input.method) ?? null,
-        cleanLabel(input.correlationId, MAX_ID_LENGTH) ?? null,
-        cleanNames(input.fields) ?? null,
-        cleanLabel(input.effect) ?? null,
-        cleanNames(input.tags) ?? null,
-      ],
-    )
-    .catch((err) => logOnce("failed to write audit event", err));
-  trackPending(promise);
+  auditBatcher.add([
+    cleanLabel(input.entity) ?? "unknown",
+    cleanLabel(input.action) ?? "unknown",
+    cleanLabel(input.targetId, MAX_ID_LENGTH) ?? null,
+    clampInt4(input.affectedCount),
+    cleanLabel(input.tenant, MAX_ID_LENGTH) ?? null,
+    cleanLabel(input.actor, MAX_ID_LENGTH) ?? null,
+    cleanLabel(input.source) ?? null,
+    cleanLabel(input.route, MAX_ID_LENGTH) ?? null,
+    cleanLabel(input.method) ?? null,
+    cleanLabel(input.correlationId, MAX_ID_LENGTH) ?? null,
+    cleanNames(input.fields) ?? null,
+    cleanLabel(input.effect) ?? null,
+    cleanNames(input.tags) ?? null,
+  ]);
 }
 
 const TABLES = [
