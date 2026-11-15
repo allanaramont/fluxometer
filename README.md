@@ -268,8 +268,16 @@ Ask your AI assistant: `recentFailures` (failed requests grouped by route,
 status and cause) and `recentAuditEvents` (newest first; filter by `entity`,
 `effect` or `tenant`).
 
-After upgrading, run the migration again so the new tables exist —
-`migrate()` is idempotent. The read-only role sees new tables automatically
+A scanner or a retry loop can fail the same route thousands of times a minute,
+so failure rows are rate-limited per process (120/min by default, change it
+with `FLUXOMETER_FAILURES_PER_MINUTE`); the number dropped is logged. Treat
+`tenant`, `actor` and `targetId` as **opaque ids** (e-mails are redacted, but
+never rely on it), and `errorCode` may be a string or a number.
+
+**Upgrading:** run the migration **before** the new code serves traffic —
+`migrate()` is idempotent and safe on every deploy. Until the tables exist,
+every failed request attempts an insert into a missing table (logged once, but
+it uses a pool connection). The read-only role sees new tables automatically
 when it was created by `npx fluxometer init`; if you set the role up by hand,
 `grant select on all tables in schema fluxometer to fluxometer_readonly;`.
 

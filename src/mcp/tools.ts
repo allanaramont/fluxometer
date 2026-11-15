@@ -124,7 +124,8 @@ export async function recentFailures(input: {
   const limit = boundedInt(input.limit, 20, MAX_ROWS);
   const { rows } = await getReadonlyPool().query(
     `select route, status, error_name, error_code,
-            count(*)::int as count, max(created_at) as last_seen
+            count(*)::int as count, max(created_at) as last_seen,
+            (sum(count(*)) over ())::int as window_total
        from fluxometer.request_failures
       where created_at > now() - ($1::int * interval '1 hour')
       group by route, status, error_name, error_code
@@ -142,7 +143,8 @@ export async function recentFailures(input: {
   }));
   return {
     windowHours: hours,
-    total: groups.reduce((sum, group) => sum + group.count, 0),
+    // The whole window, not just the groups returned under `limit`.
+    total: rows.length > 0 ? (rows[0].window_total as number) : 0,
     groups,
   };
 }
@@ -173,6 +175,8 @@ export async function recentAuditEvents(input: {
   entity?: string;
   effect?: string;
   tenant?: string;
+  /** `actor` and `targetId` can be personal ids; off unless asked for. */
+  includePersonalIds?: boolean;
 }): Promise<RecentAuditEventsResult> {
   const hours = boundedInt(input.hours, 24, MAX_HOURS);
   const limit = boundedInt(input.limit, 50, MAX_ROWS);
@@ -200,10 +204,14 @@ export async function recentAuditEvents(input: {
       at: new Date(row.created_at as string).toISOString(),
       entity: row.entity as string,
       action: row.action as string,
-      targetId: (row.target_id as string | null) ?? null,
+      targetId: input.includePersonalIds
+        ? ((row.target_id as string | null) ?? null)
+        : null,
       affectedCount: (row.affected_count as number | null) ?? null,
       tenant: (row.tenant as string | null) ?? null,
-      actor: (row.actor as string | null) ?? null,
+      actor: input.includePersonalIds
+        ? ((row.actor as string | null) ?? null)
+        : null,
       source: (row.source as string | null) ?? null,
       route: (row.route as string | null) ?? null,
       correlationId: (row.correlation_id as string | null) ?? null,

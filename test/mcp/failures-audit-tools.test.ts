@@ -41,6 +41,22 @@ describe("recentFailures", () => {
     expect(result.groups[1]).toMatchObject({ route: "/b", count: 1, errorCode: null });
   });
 
+  it("reports the real window total even when more groups exist than the limit", async () => {
+    for (let i = 0; i < 6; i++) {
+      await pool.query(
+        `insert into ${SCHEMA_NAME}.request_failures (route, method, status) values ($1, 'GET', 500), ($1, 'GET', 500)`,
+        [`/r${i}`],
+      );
+    }
+    const result = await recentFailures({ limit: 2 });
+    expect(result.groups).toHaveLength(2);
+    expect(result.total).toBe(12);
+  });
+
+  it("returns a zero total for an empty window", async () => {
+    expect((await recentFailures({})).total).toBe(0);
+  });
+
   it("only looks at the requested window and bounds its inputs", async () => {
     await pool.query(
       `insert into ${SCHEMA_NAME}.request_failures (route, method, status, created_at)
@@ -73,6 +89,20 @@ describe("recentAuditEvents", () => {
     ]);
     expect(events[0].fields).toEqual(["name", "weight"]);
     expect(events[0].tags).toEqual([]);
+  });
+
+  it("hides actor and targetId unless personal ids are asked for", async () => {
+    await pool.query(
+      `insert into ${SCHEMA_NAME}.audit_events (entity, action, actor, target_id, tenant)
+       values ('Pet','update','user-1','pet-9','f1')`,
+    );
+    const hidden = (await recentAuditEvents({})).events[0];
+    expect(hidden.actor).toBeNull();
+    expect(hidden.targetId).toBeNull();
+    expect(hidden.tenant).toBe("f1");
+    const shown = (await recentAuditEvents({ includePersonalIds: true })).events[0];
+    expect(shown.actor).toBe("user-1");
+    expect(shown.targetId).toBe("pet-9");
   });
 
   it("filters by entity, effect and tenant", async () => {

@@ -2,7 +2,12 @@ import type { Pool } from "pg";
 
 import { maybeRunStaleReportWatchdog } from "../report/health.js";
 import { getPool, trackPending } from "./pool.js";
-import { cleanLabel, cleanNames, sanitizeMessage } from "./sanitize.js";
+import {
+  clampInt4,
+  cleanLabel,
+  cleanNames,
+  sanitizeMessage,
+} from "./sanitize.js";
 import { SCHEMA_NAME } from "./schema.js";
 import type {
   AiCallMetric,
@@ -113,9 +118,54 @@ export function trackAiCall(input: AiCallMetric): void {
   trackPending(promise);
 }
 
+// A scanner or a client in a retry loop can hit a matched route with bad input
+// thousands of times a second; one INSERT per failure would queue behind the
+// 2-connection pool and grow the host's memory. Failure rows are therefore
+// rate-limited per process (a token bucket); over the cap they are dropped and
+// counted, and the count is logged once per window.
+const DEFAULT_FAILURES_PER_MINUTE = 120;
+
+function failuresPerMinute(): number {
+  const raw = Number(process.env.FLUXOMETER_FAILURES_PER_MINUTE);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : DEFAULT_FAILURES_PER_MINUTE;
+}
+
+let failureWindowStart = 0;
+let failuresInWindow = 0;
+let failuresDropped = 0;
+
+export function resetFailureLimiterForTesting(): void {
+  failureWindowStart = 0;
+  failuresInWindow = 0;
+  failuresDropped = 0;
+}
+
+/** True if this failure may be written now; counts the ones that may not. */
+function admitFailure(now: number = Date.now()): boolean {
+  if (now - failureWindowStart >= 60_000) {
+    if (failuresDropped > 0) {
+      console.warn(
+        `fluxometer: dropped ${failuresDropped} failure row(s) in the last minute (over ${failuresPerMinute()}/min). Set FLUXOMETER_FAILURES_PER_MINUTE to change the cap.`,
+      );
+    }
+    failureWindowStart = now;
+    failuresInWindow = 0;
+    failuresDropped = 0;
+  }
+  if (failuresInWindow >= failuresPerMinute()) {
+    failuresDropped += 1;
+    return false;
+  }
+  failuresInWindow += 1;
+  return true;
+}
+
 /** A failed (4xx/5xx) request, with the cause. Every free-text field is
  * sanitized and bounded here, so no caller path can store raw text. */
 export function trackFailure(input: FailureEvent): void {
+  if (!admitFailure()) return;
   const promise = getPool()
     .query(
       `insert into ${SCHEMA_NAME}.request_failures
@@ -154,10 +204,7 @@ export function trackAudit(input: AuditEvent): void {
         cleanLabel(input.entity) ?? "unknown",
         cleanLabel(input.action) ?? "unknown",
         cleanLabel(input.targetId, MAX_ID_LENGTH) ?? null,
-        input.affectedCount !== undefined &&
-        Number.isFinite(input.affectedCount)
-          ? Math.round(input.affectedCount)
-          : null,
+        clampInt4(input.affectedCount),
         cleanLabel(input.tenant, MAX_ID_LENGTH) ?? null,
         cleanLabel(input.actor, MAX_ID_LENGTH) ?? null,
         cleanLabel(input.source) ?? null,

@@ -33,7 +33,8 @@ export type FailureEvent = {
   status: number;
   durationMs?: number;
   errorName?: string;
-  errorCode?: string;
+  /** A string, or a number (errno, Mongo codes): stored as text. */
+  errorCode?: string | number;
   /** Sanitized and truncated before it is stored (see sanitizeMessage). */
   message?: string;
   correlationId?: string;

@@ -5,6 +5,7 @@ import { flushForTesting, setPoolForTesting } from "../../src/core/pool.js";
 import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
 import {
   cleanupOldRows,
+  resetFailureLimiterForTesting,
   trackAudit,
   trackFailure,
 } from "../../src/core/writer.js";
@@ -16,6 +17,48 @@ beforeEach(async () => {
   await pool.query(`delete from ${SCHEMA_NAME}.request_failures`);
   await pool.query(`delete from ${SCHEMA_NAME}.audit_events`);
   setPoolForTesting(pool);
+  resetFailureLimiterForTesting();
+  delete process.env.FLUXOMETER_FAILURES_PER_MINUTE;
+});
+
+describe("trackFailure rate limit", () => {
+  it("drops failure rows over the per-minute cap instead of flooding the pool", async () => {
+    process.env.FLUXOMETER_FAILURES_PER_MINUTE = "5";
+    for (let i = 0; i < 50; i++) {
+      trackFailure({ route: "/login", method: "POST", status: 401 });
+    }
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select count(*)::int as n from ${SCHEMA_NAME}.request_failures`,
+    );
+    expect(rows[0].n).toBe(5);
+  });
+
+  it("admits again in the next window", async () => {
+    process.env.FLUXOMETER_FAILURES_PER_MINUTE = "2";
+    const realNow = Date.now;
+    try {
+      let now = 1_000_000;
+      Date.now = () => now;
+      for (let i = 0; i < 5; i++) {
+        trackFailure({ route: "/a", method: "GET", status: 500 });
+      }
+      now += 61_000;
+      for (let i = 0; i < 5; i++) {
+        trackFailure({ route: "/b", method: "GET", status: 500 });
+      }
+    } finally {
+      Date.now = realNow;
+    }
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select route, count(*)::int as n from ${SCHEMA_NAME}.request_failures group by route order by route`,
+    );
+    expect(rows).toEqual([
+      { route: "/a", n: 2 },
+      { route: "/b", n: 2 },
+    ]);
+  });
 });
 
 describe("trackFailure", () => {
@@ -77,6 +120,24 @@ describe("trackFailure", () => {
     expect(rows[0].message).toContain("[email]");
   });
 
+  it("stores a numeric error code and redacts an e-mail passed as a label", async () => {
+    trackFailure({
+      route: "/x",
+      method: "POST",
+      status: 409,
+      errorCode: 11000,
+      errorName: "User ana@example.com missing",
+      tenant: "ana@example.com",
+    });
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select error_code, error_name, tenant from ${SCHEMA_NAME}.request_failures`,
+    );
+    expect(rows[0].error_code).toBe("11000");
+    expect(rows[0].error_name).not.toContain("ana@example.com");
+    expect(rows[0].tenant).toBe("[email]");
+  });
+
   it("allows a failure with no cause at all", async () => {
     trackFailure({ route: "/x", method: "GET", status: 401 });
     await flushForTesting();
@@ -135,6 +196,15 @@ describe("trackAudit", () => {
       effect: "scoped",
       tags: ["pets-list", "agenda-day"],
     });
+  });
+
+  it("clamps an affectedCount beyond int4 instead of losing the row", async () => {
+    trackAudit({ entity: "Task", action: "updateMany", affectedCount: 1e10 });
+    await flushForTesting();
+    const { rows } = await pool.query(
+      `select affected_count from ${SCHEMA_NAME}.audit_events`,
+    );
+    expect(rows[0].affected_count).toBe(2_147_483_647);
   });
 
   it("bounds a wide or odd event instead of failing the insert", async () => {

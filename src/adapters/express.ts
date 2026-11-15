@@ -25,7 +25,7 @@ function routeLabel(req: Request): string {
 /** The cause of a failed response, handed over by the app's error handler. */
 export type FailureCause = {
   name?: string;
-  code?: string;
+  code?: string | number;
   /** Only stored when `failures.captureMessage` is on; sanitized either way. */
   message?: string;
 };
