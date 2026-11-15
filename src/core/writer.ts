@@ -2,8 +2,19 @@ import type { Pool } from "pg";
 
 import { maybeRunStaleReportWatchdog } from "../report/health.js";
 import { getPool, trackPending } from "./pool.js";
+import { cleanLabel, cleanNames, sanitizeMessage } from "./sanitize.js";
 import { SCHEMA_NAME } from "./schema.js";
-import type { AiCallMetric, ClientMetric, RequestMetric } from "./types.js";
+import type {
+  AiCallMetric,
+  AuditEvent,
+  ClientMetric,
+  FailureEvent,
+  RequestMetric,
+} from "./types.js";
+
+// Ids that travel across systems (a correlation id, a tenant key) are longer
+// than a label but still bounded.
+const MAX_ID_LENGTH = 128;
 
 const warnedOnce = new Set<string>();
 
@@ -102,8 +113,70 @@ export function trackAiCall(input: AiCallMetric): void {
   trackPending(promise);
 }
 
+/** A failed (4xx/5xx) request, with the cause. Every free-text field is
+ * sanitized and bounded here, so no caller path can store raw text. */
+export function trackFailure(input: FailureEvent): void {
+  const promise = getPool()
+    .query(
+      `insert into ${SCHEMA_NAME}.request_failures
+        (route, method, status, duration_ms, error_name, error_code, message,
+         correlation_id, tenant, user_hash, platform)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [
+        input.route,
+        input.method,
+        input.status,
+        input.durationMs !== undefined && Number.isFinite(input.durationMs)
+          ? Math.max(0, Math.round(input.durationMs))
+          : null,
+        cleanLabel(input.errorName) ?? null,
+        cleanLabel(input.errorCode) ?? null,
+        sanitizeMessage(input.message) ?? null,
+        cleanLabel(input.correlationId, MAX_ID_LENGTH) ?? null,
+        cleanLabel(input.tenant, MAX_ID_LENGTH) ?? null,
+        input.userHash ?? null,
+        input.platform ?? null,
+      ],
+    )
+    .catch((err) => logOnce("failed to write request failure", err));
+  trackPending(promise);
+}
+
+/** "Something changed". Field NAMES only: there is no place for a value. */
+export function trackAudit(input: AuditEvent): void {
+  const promise = getPool()
+    .query(
+      `insert into ${SCHEMA_NAME}.audit_events
+        (entity, action, target_id, affected_count, tenant, actor, source,
+         route, method, correlation_id, fields, effect, tags)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+      [
+        cleanLabel(input.entity) ?? "unknown",
+        cleanLabel(input.action) ?? "unknown",
+        cleanLabel(input.targetId, MAX_ID_LENGTH) ?? null,
+        input.affectedCount !== undefined &&
+        Number.isFinite(input.affectedCount)
+          ? Math.round(input.affectedCount)
+          : null,
+        cleanLabel(input.tenant, MAX_ID_LENGTH) ?? null,
+        cleanLabel(input.actor, MAX_ID_LENGTH) ?? null,
+        cleanLabel(input.source) ?? null,
+        cleanLabel(input.route, MAX_ID_LENGTH) ?? null,
+        cleanLabel(input.method) ?? null,
+        cleanLabel(input.correlationId, MAX_ID_LENGTH) ?? null,
+        cleanNames(input.fields) ?? null,
+        cleanLabel(input.effect) ?? null,
+        cleanNames(input.tags) ?? null,
+      ],
+    )
+    .catch((err) => logOnce("failed to write audit event", err));
+  trackPending(promise);
+}
+
 const TABLES = [
   "request_metrics",
+  "request_failures",
+  "audit_events",
   "client_metrics",
   "ai_calls",
   "deploy_markers",

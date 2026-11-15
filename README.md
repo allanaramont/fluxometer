@@ -65,6 +65,9 @@ import { expressMiddleware } from "fluxometer/express";
 app.use(expressMiddleware());
 ```
 
+Failed (4xx/5xx) requests are also recorded with their cause — see
+[Failures with a cause](#failures-with-a-cause).
+
 ### Fastify
 
 ```ts
@@ -195,6 +198,80 @@ secrets are never stored, and URLs in error messages are redacted). Set
 After upgrading fluxometer, run the migration again so the new table
 exists — `migrate()` from `fluxometer/migrate` is idempotent and safe to
 call on every deploy.
+
+### Failures with a cause
+
+`request_metrics` says a request failed; `request_failures` says why and for
+whom. With the Express middleware it is on by default: every 4xx/5xx of a
+**matched route** is recorded with route pattern, method, status, duration,
+and — when your error handler hands it over — the error name and code:
+
+```ts
+import { expressMiddleware, setFailureCause } from "fluxometer/express";
+
+app.use(
+  expressMiddleware({
+    failures: {
+      tenant: (req) => req.params.familyId, // who it happened to (optional)
+      correlationId: (req) => req.get("x-correlation-id"), // optional
+    },
+  }),
+);
+
+// in your error handler:
+app.use((err, req, res, next) => {
+  setFailureCause(res, { name: err.name, code: err.code });
+  res.status(err.status ?? 500).json({ error: "..." });
+});
+```
+
+Privacy, because this runs in every app that installs fluxometer:
+
+- The error **message is not stored** unless you set
+  `failures: { captureMessage: true }` and pass it in `setFailureCause`.
+  When stored, it is scrubbed (emails, tokens, long digit runs, URL query
+  strings) and cut to 200 characters — a safety net, not a guarantee.
+- Unmatched routes are never recorded (scanner noise; their raw path can
+  carry tokens).
+- `failures: false` turns it off. Rows follow the same 30-day cleanup.
+
+Outside Express: `track.failure({ route, method, status, errorName, ... })`.
+
+### Audit events
+
+A generic "something changed" record, for any app and any data layer:
+
+```ts
+import { track } from "fluxometer";
+
+track.audit({
+  entity: "Pet",
+  action: "update",
+  targetId: pet.id,
+  tenant: familyId,
+  actor: userId, // an id or a hash — never a name or an e-mail
+  source: "http", // or "cron", "internal"...
+  route: "/api/pets/:petId",
+  correlationId,
+  fields: ["name", "weight"], // the NAMES of what changed
+  effect: "scoped", // free text, e.g. what it did to your caches
+  tags: ["pets-list"],
+});
+```
+
+There is **nowhere to put a value**: `fields` takes names only, and every
+field is bounded (50 names, 64 characters each). Hook it where your app
+already sees every write (an ORM middleware, a service layer). Rows follow
+the 30-day cleanup.
+
+Ask your AI assistant: `recentFailures` (failed requests grouped by route,
+status and cause) and `recentAuditEvents` (newest first; filter by `entity`,
+`effect` or `tenant`).
+
+After upgrading, run the migration again so the new tables exist —
+`migrate()` is idempotent. The read-only role sees new tables automatically
+when it was created by `npx fluxometer init`; if you set the role up by hand,
+`grant select on all tables in schema fluxometer to fluxometer_readonly;`.
 
 ### Any other JS/TS framework
 

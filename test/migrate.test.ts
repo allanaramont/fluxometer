@@ -16,9 +16,11 @@ describe("migrate", () => {
       );
       expect(rows.map((r) => r.table_name).sort()).toEqual([
         "ai_calls",
+        "audit_events",
         "client_metrics",
         "deploy_markers",
         "report_runs",
+        "request_failures",
         "request_metrics",
       ]);
     } finally {
