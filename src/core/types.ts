@@ -25,3 +25,43 @@ export type AiCallMetric = {
   success: boolean;
   userHash?: string;
 };
+
+/** A failed (4xx/5xx) request of a matched route, with its cause. */
+export type FailureEvent = {
+  route: string;
+  method: string;
+  status: number;
+  durationMs?: number;
+  errorName?: string;
+  /** A string, or a number (errno, Mongo codes): stored as text. */
+  errorCode?: string | number;
+  /** Sanitized and truncated before it is stored (see sanitizeMessage). */
+  message?: string;
+  correlationId?: string;
+  tenant?: string;
+  userHash?: string;
+  platform?: string;
+};
+
+/**
+ * "Something changed". There is nowhere to put a VALUE: `fields` takes the
+ * NAMES of what changed, never what it changed to.
+ */
+export type AuditEvent = {
+  entity: string;
+  action: string;
+  targetId?: string;
+  affectedCount?: number;
+  tenant?: string;
+  /** An id or a hash - the host decides; never a name or an e-mail. */
+  actor?: string;
+  /** Where it came from, e.g. "http", "cron", "internal". */
+  source?: string;
+  route?: string;
+  method?: string;
+  correlationId?: string;
+  fields?: string[];
+  /** Free text, e.g. "wide", "scoped", "none". */
+  effect?: string;
+  tags?: string[];
+};
