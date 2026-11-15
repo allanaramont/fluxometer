@@ -120,44 +120,81 @@ export function trackAiCall(input: AiCallMetric): void {
 
 // A scanner or a client in a retry loop can hit a matched route with bad input
 // thousands of times a second; one INSERT per failure would queue behind the
-// 2-connection pool and grow the host's memory. Failure rows are therefore
-// rate-limited per process (a token bucket); over the cap they are dropped and
-// counted, and the count is logged once per window.
-const DEFAULT_FAILURES_PER_MINUTE = 120;
+// 2-connection pool and grow the host's memory. Failure rows are rate-limited
+// per process, in two layers:
+//  - PER KEY (route, status, error name/code): one noisy kind of failure cannot
+//    use up the budget and hide every other kind;
+//  - GLOBAL, as a backstop for pool and memory when the keys themselves are
+//    many.
+// Rows over a cap are dropped and counted, and the counts (total and the
+// noisiest keys) are logged once per window - the volume stays visible even
+// though the rows do not.
+const DEFAULT_PER_KEY_PER_MINUTE = 20;
+const DEFAULT_FAILURES_PER_MINUTE = 600;
+const MAX_TRACKED_KEYS = 500;
+const OVERFLOW_KEY = "<other>";
 
-function failuresPerMinute(): number {
-  const raw = Number(process.env.FLUXOMETER_FAILURES_PER_MINUTE);
-  return Number.isFinite(raw) && raw > 0
-    ? Math.floor(raw)
-    : DEFAULT_FAILURES_PER_MINUTE;
+function envInt(name: string, fallback: number): number {
+  const raw = Number(process.env[name]);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
 }
 
 let failureWindowStart = 0;
 let failuresInWindow = 0;
-let failuresDropped = 0;
+const failureKeyCounts = new Map<string, { admitted: number; dropped: number }>();
 
 export function resetFailureLimiterForTesting(): void {
   failureWindowStart = 0;
   failuresInWindow = 0;
-  failuresDropped = 0;
+  failureKeyCounts.clear();
+}
+
+function failureKey(input: FailureEvent): string {
+  return [
+    input.route,
+    input.status,
+    String(input.errorName ?? "").slice(0, 64),
+    String(input.errorCode ?? "").slice(0, 64),
+  ].join("|");
+}
+
+function reportDropped(): void {
+  const dropped = [...failureKeyCounts.entries()]
+    .filter(([, c]) => c.dropped > 0)
+    .sort((a, b) => b[1].dropped - a[1].dropped);
+  if (dropped.length === 0) return;
+  const total = dropped.reduce((sum, [, c]) => sum + c.dropped, 0);
+  const top = dropped
+    .slice(0, 3)
+    .map(([key, c]) => `${key} x${c.dropped}`)
+    .join("; ");
+  console.warn(
+    `fluxometer: dropped ${total} failure row(s) in the last minute (caps: ${envInt("FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE", DEFAULT_PER_KEY_PER_MINUTE)}/key, ${envInt("FLUXOMETER_FAILURES_PER_MINUTE", DEFAULT_FAILURES_PER_MINUTE)} total). Noisiest: ${top}`,
+  );
 }
 
 /** True if this failure may be written now; counts the ones that may not. */
-function admitFailure(now: number = Date.now()): boolean {
+function admitFailure(input: FailureEvent, now: number = Date.now()): boolean {
   if (now - failureWindowStart >= 60_000) {
-    if (failuresDropped > 0) {
-      console.warn(
-        `fluxometer: dropped ${failuresDropped} failure row(s) in the last minute (over ${failuresPerMinute()}/min). Set FLUXOMETER_FAILURES_PER_MINUTE to change the cap.`,
-      );
-    }
+    reportDropped();
     failureWindowStart = now;
     failuresInWindow = 0;
-    failuresDropped = 0;
+    failureKeyCounts.clear();
   }
-  if (failuresInWindow >= failuresPerMinute()) {
-    failuresDropped += 1;
+  let key = failureKey(input);
+  if (!failureKeyCounts.has(key) && failureKeyCounts.size >= MAX_TRACKED_KEYS) {
+    key = OVERFLOW_KEY; // bounded memory: unknown keys share one bucket
+  }
+  const entry = failureKeyCounts.get(key) ?? { admitted: 0, dropped: 0 };
+  failureKeyCounts.set(key, entry);
+  if (
+    entry.admitted >= envInt("FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE", DEFAULT_PER_KEY_PER_MINUTE) ||
+    failuresInWindow >= envInt("FLUXOMETER_FAILURES_PER_MINUTE", DEFAULT_FAILURES_PER_MINUTE)
+  ) {
+    entry.dropped += 1;
     return false;
   }
+  entry.admitted += 1;
   failuresInWindow += 1;
   return true;
 }
@@ -165,7 +202,7 @@ function admitFailure(now: number = Date.now()): boolean {
 /** A failed (4xx/5xx) request, with the cause. Every free-text field is
  * sanitized and bounded here, so no caller path can store raw text. */
 export function trackFailure(input: FailureEvent): void {
-  if (!admitFailure()) return;
+  if (!admitFailure(input)) return;
   const promise = getPool()
     .query(
       `insert into ${SCHEMA_NAME}.request_failures

@@ -14,30 +14,39 @@ const MAX_LIST_ITEMS = 50;
 // Quantifiers are bounded: this runs on text that can come straight from a
 // request (an error message built from user input), so no pattern may be left
 // open-ended on attacker-controlled length.
-const EMAIL = /[^\s@<>()[\]",;:]{1,64}@[^\s@<>()[\]",;:]{1,63}(?:\.[^\s@<>()[\]",;:]{1,63}){1,8}/g;
+// No pattern has an upper bound on the length of what it hides: a secret
+// longer than a cap would otherwise fail to match at all and pass through whole
+// (a `{32,500}` token followed by `\b` does not match a 600-character run).
+// The cost is bounded instead by cutting the input first (see
+// SCAN_LIMIT_FACTOR below), so worst-case work is quadratic in a few hundred
+// characters, not in whatever the host handed us.
+const EMAIL = /[^\s@<>()[\]",;:]+@[^\s@<>()[\]",;:]+(?:\.[^\s@<>()[\]",;:]+)+/g;
+
+const SECRET_KEY =
+  /["']?\b(?:pass(?:word|wd)?|secret|token|api[-_]?key|authorization|auth)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&"')]+)/gi;
 
 const REDACTIONS: [RegExp, string][] = [
   [EMAIL, "[email]"],
-  // secrets written as key=value / key: value, however short
-  [
-    /\b(?:pass(?:word|wd)?|secret|token|api[-_]?key|authorization|auth)\s*[:=]\s*[^\s,;&"')]{1,200}/gi,
-    "[secret]",
-  ],
+  // secrets written as key=value / key: value / "key":"value" / key='value'
+  [SECRET_KEY, "[secret]"],
   // well-known key prefixes, however short the rest is
-  [/\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{6,}|\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{6,}|\bxox[abprs]-[A-Za-z0-9-]{6,}|\bAKIA[A-Z0-9]{8,}/g, "[token]"],
+  [
+    /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{6,}|\b(?:ghp|gho|ghs|ghu)_[A-Za-z0-9]{6,}|\bxox[abprs]-[A-Za-z0-9-]{6,}|\bAKIA[A-Z0-9]{8,}/g,
+    "[token]",
+  ],
   // IPv4 and IPv6
   [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip]"],
   // IPv6, including the compressed "::" form; never matches C++-style "a::b"
   [/(?<![\w:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![\w:])/gi, "[ip]"],
   // JWTs (three base64url parts) and "Bearer <token>"
-  [/\beyJ[\w-]{5,500}\.[\w-]{5,500}\.[\w-]{5,500}/g, "[token]"],
-  [/\bBearer\s+[\w.~+/=-]{1,500}/gi, "Bearer [token]"],
+  [/\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]{5,}/g, "[token]"],
+  [/\bBearer\s+[\w.~+/=-]+/gi, "Bearer [token]"],
   // URL query strings can carry anything
-  [/\?[^\s"')]{0,500}/g, "?[query]"],
+  [/\?[^\s"')]*/g, "?[query]"],
   // long opaque tokens / keys
-  [/\b[A-Za-z0-9_-]{32,500}\b/g, "[token]"],
+  [/[A-Za-z0-9_-]{32,}/g, "[token]"],
   // phones, CPF/CNPJ, card numbers: 9+ digits, with common separators
-  [/\b\d[\d .()/-]{7,30}\d\b/g, "[number]"],
+  [/\b\d[\d .()/-]{7,}\d\b/g, "[number]"],
 ];
 
 // Work on a bounded prefix: the regexes below never see more than this, so a
@@ -49,7 +58,7 @@ export function sanitizeMessage(
   max: number = MAX_MESSAGE_LENGTH,
 ): string | undefined {
   if (typeof text !== "string") return undefined;
-  const limit = max * SCAN_LIMIT_FACTOR;
+  const limit = Math.min(max, MAX_MESSAGE_LENGTH * 5) * SCAN_LIMIT_FACTOR;
   let out = (text.length > limit ? text.slice(0, limit) : text).replace(
     /\u0000/g,
     "",

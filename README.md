@@ -269,8 +269,12 @@ status and cause) and `recentAuditEvents` (newest first; filter by `entity`,
 `effect` or `tenant`).
 
 A scanner or a retry loop can fail the same route thousands of times a minute,
-so failure rows are rate-limited per process (120/min by default, change it
-with `FLUXOMETER_FAILURES_PER_MINUTE`); the number dropped is logged. Treat
+so failure rows are rate-limited per process: **20 per minute per kind of
+failure** (route + status + error name/code), so one noisy kind cannot hide the
+others, plus a backstop of 600 per minute in total. Change them with
+`FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE` and `FLUXOMETER_FAILURES_PER_MINUTE`.
+What was dropped is logged once a minute, with the noisiest kinds, so the
+volume stays visible. Treat
 `tenant`, `actor` and `targetId` as **opaque ids** (e-mails are redacted, but
 never rely on it), and `errorCode` may be a string or a number.
 

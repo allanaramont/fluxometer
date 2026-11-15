@@ -104,6 +104,50 @@ describe("sanitizeMessage - secrets and addresses", () => {
   });
 });
 
+describe("sanitizeMessage - no secret escapes by being long or quoted", () => {
+  it("redacts a very long opaque token whole (no length cap lets it through)", () => {
+    const token = "A1b2".repeat(150); // 600 chars
+    const out = sanitizeMessage(`key ${token} end`)!;
+    expect(out).toBe("key [token] end");
+    expect(out).not.toMatch(/A1b2/);
+  });
+
+  it("redacts a very long JWT, Bearer value and query string whole", () => {
+    const part = "abcdE".repeat(120); // 600 chars
+    const jwtPart = "abcdE".repeat(36); // 3 x 180 chars: inside the scan window
+    expect(sanitizeMessage(`t eyJ${jwtPart}.${jwtPart}.${jwtPart} x`)).toBe(
+      "t [token] x",
+    );
+    expect(sanitizeMessage(`Bearer ${part} x`)).toBe("Bearer [token] x");
+    expect(sanitizeMessage(`GET /a?${part} x`)).toBe("GET /a?[query] x");
+  });
+
+  it("when the text is longer than the scan window, drops the cut tail instead of leaking a fragment", () => {
+    const part = "abcdE".repeat(120);
+    // 1800+ chars of one JWT: cut mid-token, the partial run is removed
+    const out = sanitizeMessage(`t eyJ${part}.${part}.${part} x`)!;
+    expect(out).not.toMatch(/abcdE/);
+  });
+
+  it("redacts the whole local part of a long email", () => {
+    const local = "a".repeat(100);
+    expect(sanitizeMessage(`to ${local}@example.com done`)).toBe(
+      "to [email] done",
+    );
+  });
+
+  it("redacts JSON and quoted forms of key/value secrets", () => {
+    expect(sanitizeMessage('body {"password":"hunter2"} rejected')).toBe(
+      "body {[secret]} rejected",
+    );
+    expect(sanitizeMessage("password='hun ter2' rejected")).toBe(
+      "[secret] rejected",
+    );
+    expect(sanitizeMessage('{"api_key": "abc"}')).toBe("{[secret]}");
+    expect(sanitizeMessage('Authorization: "Basic xyz"')).toBe("[secret]");
+  });
+});
+
 describe("sanitizeMessage on hostile input", () => {
   it("stays fast on very large and pathological input", () => {
     const inputs = [

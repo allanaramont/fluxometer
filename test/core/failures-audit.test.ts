@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { flushForTesting, setPoolForTesting } from "../../src/core/pool.js";
 import { runMigration, SCHEMA_NAME } from "../../src/core/schema.js";
@@ -32,6 +32,49 @@ describe("trackFailure rate limit", () => {
       `select count(*)::int as n from ${SCHEMA_NAME}.request_failures`,
     );
     expect(rows[0].n).toBe(5);
+  });
+
+  it("caps each kind of failure separately, so one flood cannot hide another", async () => {
+    process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE = "3";
+    for (let i = 0; i < 100; i++) {
+      trackFailure({ route: "/login", method: "POST", status: 401 });
+    }
+    trackFailure({ route: "/pets/:id", method: "GET", status: 500 });
+    trackFailure({ route: "/pets/:id", method: "GET", status: 500, errorCode: "DB_DOWN" });
+    await flushForTesting();
+    delete process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE;
+    const { rows } = await pool.query(
+      `select route, status, error_code, count(*)::int as n
+         from ${SCHEMA_NAME}.request_failures
+        group by route, status, error_code order by route, error_code nulls first`,
+    );
+    expect(rows).toEqual([
+      { route: "/login", status: 401, error_code: null, n: 3 },
+      { route: "/pets/:id", status: 500, error_code: null, n: 1 },
+      { route: "/pets/:id", status: 500, error_code: "DB_DOWN", n: 1 },
+    ]);
+  });
+
+  it("logs what it dropped, with the noisiest kinds, when the window rolls over", async () => {
+    process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE = "1";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const realNow = Date.now;
+    try {
+      let now = 5_000_000;
+      Date.now = () => now;
+      for (let i = 0; i < 4; i++) {
+        trackFailure({ route: "/login", method: "POST", status: 401 });
+      }
+      now += 61_000;
+      trackFailure({ route: "/login", method: "POST", status: 401 });
+    } finally {
+      Date.now = realNow;
+    }
+    await flushForTesting();
+    delete process.env.FLUXOMETER_FAILURES_PER_KEY_PER_MINUTE;
+    const message = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(message).toMatch(/dropped 3 failure row/);
+    expect(message).toContain("/login|401");
   });
 
   it("admits again in the next window", async () => {
