@@ -88,3 +88,35 @@ describe("route label and tenant do not depend on where the response is sent", (
     expect(request_.mock.calls[0][0].route).not.toContain(ID);
   });
 });
+
+describe("the rebuilt prefix only ever contains names", () => {
+  it("refuses to rebuild when a mount segment looks like data, keeping Express's label", async () => {
+    const request_ = vi.spyOn(writer, "trackRequest").mockImplementation(() => {});
+    const app = express();
+    app.use(expressMiddleware());
+    const router = express.Router();
+    router.get("/:id/x", (_req, _res, next) => next(new Error("boom")));
+    // a mount path with a parameter: the segment is DATA ("12345"), not a name
+    app.use("/v/:version", router);
+    app.use(((_err, _req, res, _next) => {
+      res.status(500).send("no");
+    }) as express.ErrorRequestHandler);
+    await request(app).get("/v/12345/9/x");
+    await settle();
+    expect(request_.mock.calls[0][0].route).not.toContain("12345");
+  });
+
+  it("caps the label length", async () => {
+    const request_ = vi.spyOn(writer, "trackRequest").mockImplementation(() => {});
+    const app = express();
+    app.use(expressMiddleware());
+    const longName = "a".repeat(40);
+    const router = express.Router();
+    router.get(`/${"b".repeat(400)}`, (_req, res) => res.send("ok"));
+    app.use(`/${longName}`, router);
+    await request(app).get(`/${longName}/${"b".repeat(400)}`);
+    await settle();
+    expect(request_.mock.calls[0][0].route.length).toBeLessThanOrEqual(256);
+  });
+});
+

@@ -19,6 +19,25 @@ export type RouteInfo = {
 // wildcards and optional parts keep the label Express reports.
 const PLAIN_PATTERN = /^[\w/:.-]*$/;
 
+// A mount-path segment that is a NAME ("api", "families", "v1"), not an id, a
+// number or a token. The prefix rebuilt from the URL must only ever be made of
+// names: if any segment looks like data, the rebuild is refused.
+const LITERAL_SEGMENT = /^[\w.-]{1,40}$/;
+
+function looksLikeId(segment: string): boolean {
+  return (
+    /^\d+$/.test(segment) ||
+    /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(segment) ||
+    /^[0-9a-f]{16,}$/i.test(segment) ||
+    (segment.length >= 12 && /\d/.test(segment))
+  );
+}
+
+const isLiteralSegment = (segment: string) =>
+  LITERAL_SEGMENT.test(segment) && !looksLikeId(segment);
+
+const MAX_ROUTE_LABEL_LENGTH = 256;
+
 function safeDecode(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -45,6 +64,10 @@ function safeDecode(value: string): string {
  * segments (mount paths are literal), and the params are read from the
  * segments that line up with the `:name` ones.
  */
+function finish(route: string, params: Record<string, string>): RouteInfo {
+  return { route: route.slice(0, MAX_ROUTE_LABEL_LENGTH), params };
+}
+
 function routeInfo(req: Request): RouteInfo | undefined {
   const path = req.route?.path as unknown;
   if (path === undefined) return undefined;
@@ -57,11 +80,11 @@ function routeInfo(req: Request): RouteInfo | undefined {
   const directSegments = direct.split("/").filter(Boolean);
 
   if (typeof path !== "string" || !PLAIN_PATTERN.test(path)) {
-    return { route: direct, params: { ...reqParams } };
+    return finish(direct, { ...reqParams });
   }
   const patternSegments = path.split("/").filter(Boolean);
   if (patternSegments.length > urlSegments.length) {
-    return { route: direct, params: { ...reqParams } };
+    return finish(direct, { ...reqParams });
   }
 
   // The params can be read off the URL whatever happened to req.params (an
@@ -77,13 +100,16 @@ function routeInfo(req: Request): RouteInfo | undefined {
 
   // baseUrl still lines up with the URL: keep the label Express built.
   if (directSegments.length === urlSegments.length) {
-    return { route: direct, params };
+    return finish(direct, params);
   }
   const prefix = urlSegments.slice(0, urlSegments.length - patternSegments.length);
-  return {
-    route: `${prefix.length > 0 ? `/${prefix.join("/")}` : ""}${path}`,
+  // Refuse to rebuild from anything that is not a plain name: keep the label
+  // Express built rather than let URL data into a metric label.
+  if (!prefix.every(isLiteralSegment)) return finish(direct, params);
+  return finish(
+    `${prefix.length > 0 ? `/${prefix.join("/")}` : ""}${path}`,
     params,
-  };
+  );
 }
 
 /** The cause of a failed response, handed over by the app's error handler. */
