@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [master, main]
-  pull_request:
+  # Só manual (decisão 2026-11-26): rodar em Actions > Run workflow.
+  workflow_dispatch: {}
 
 jobs:
   test:
